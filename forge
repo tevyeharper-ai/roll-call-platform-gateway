@@ -1,0 +1,20 @@
+#!/usr/bin/env php
+<?php
+require dirname(__DIR__).'/src/helpers.php';
+$cmd=$argv[1]??'help';
+$d=forge_state();
+if($cmd==='doctor'){
+  $s=storage_status();
+  echo "Dream Kinetic: Forge ".forge_config()['version']."\n";
+  echo "PHP: ".PHP_VERSION."\n";
+  echo "Storage: {$s['driver']} — ".($s['ready']?'ready':'not ready')."\n";
+  echo "pdo_pgsql: ".(extension_loaded('pdo_pgsql')?'yes':'no')."\n";
+  echo "Applications: ".count(all_apps($d))."\n";
+  exit($s['driver']==='PostgreSQL'&&!$s['ready']?2:0);
+}
+if($cmd==='clients'){foreach($d['clients'] as $c)echo $c['id']."\t".$c['name']."\n";exit;}
+if($cmd==='apps'){foreach(all_apps($d) as $a)echo $a['id']."\t".$a['_client']."\t".$a['name']."\t".($a['repo']?:'-')."\n";exit;}
+if($cmd==='context'){$id=$argv[2]??'';$p=make_agent_pack($d,$id);if(!$p){fwrite(STDERR,"Unknown application\n");exit(1);}echo json_encode($p['context'],JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";exit;}
+if($cmd==='schema'){foreach(glob(dirname(__DIR__).'/database/migrations/*.sql') as $f)echo basename($f)."\n";exit;}
+if($cmd==='test'){passthru(PHP_BINARY.' '.escapeshellarg(dirname(__DIR__).'/tests/foundation.php'),$code);exit($code);}
+echo "Forge CLI\n\nCommands:\n  doctor\n  clients\n  apps\n  context <app>\n  schema\n  test\n";

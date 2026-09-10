@@ -1,11 +1,13 @@
-# Roll Call Platform Gateway P3.1.1 — Managed Runtime
+# Forge Runtime Standard 1.0 — Laravel implementation boundary
 
-This directory is the hosted Gateway service paired by the WordPress Platform Bootstrap. It is designed for a managed deployment provider such as Railway so the product owner does not need SSH or reverse-proxy access.
+Forge Runtime is the preferred framework-first application runtime beneath Dream Kinetic: Forge contracts. Laravel is an implementation framework, not the Forge platform authority.
 
-Required runtime variables:
-- `RC_WORDPRESS_ORIGIN=https://rollcallevents.co`
-- `RC_GATEWAY_PRIVATE_KEY_PEM=<generated deployment secret>`
-- `RC_GATEWAY_PUBLIC_KEY_PEM=<matching public key>`
-- `RC_REFERENCE_CONSUMERS=events`
+F0.4 establishes the runtime boundary and PostgreSQL production foundation. F1.0 begins executable generation of data objects, migrations, API contracts, policy contracts, tests, and live preview artifacts.
 
-The private key is generated for the hosted service and is never shipped in the WordPress plugin package.
+Rules:
+- client/tenant scope must be explicit in every authoritative mutation;
+- generated code must expose contracts rather than private implementation coupling;
+- custom code extends declared Forge extension points;
+- Builder Mode and Developer Mode operate on the same application state;
+- Explore, Research, and Design stages cannot mutate source;
+- Build targets development/preview first; release remains separately certified.

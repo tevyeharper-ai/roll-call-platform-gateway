@@ -1,0 +1,12 @@
+BEGIN;
+ALTER TABLE forge_users ADD COLUMN IF NOT EXISTS password_hash text;
+ALTER TABLE forge_users ADD COLUMN IF NOT EXISTS ai_plan text;
+ALTER TABLE forge_users ADD COLUMN IF NOT EXISTS invite_token_hash text;
+ALTER TABLE forge_users ADD COLUMN IF NOT EXISTS invite_expires_at timestamptz;
+ALTER TABLE forge_users ADD COLUMN IF NOT EXISTS last_login_at timestamptz;
+ALTER TABLE repositories ADD COLUMN IF NOT EXISTS verified_at timestamptz;
+ALTER TABLE environments ADD COLUMN IF NOT EXISTS branch text;
+ALTER TABLE environments ADD COLUMN IF NOT EXISTS release_channel text;
+CREATE INDEX IF NOT EXISTS contractor_assignments_app_idx ON contractor_assignments(application_id, status);
+CREATE INDEX IF NOT EXISTS repositories_status_idx ON repositories(status);
+COMMIT;

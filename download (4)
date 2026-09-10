@@ -1,0 +1,7 @@
+forge-app/storage/forge-local.php
+forge-app/storage/forge-infrastructure.php
+forge-app/storage/install-key.txt
+forge-app/storage/forge-foundation.json
+forge-app/storage/agent-packs/
+*.zip
+.DS_Store

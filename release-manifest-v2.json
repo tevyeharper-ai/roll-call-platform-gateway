@@ -1,0 +1,164 @@
+{
+  "schema": "dream-kinetic.forge.release-manifest.v2",
+  "product": "Dream Kinetic: Forge",
+  "release": "F0.4.0",
+  "channel": "railway-migration",
+  "kind": "cpanel_overlay_install",
+  "created_at": "2026-09-10T00:13:54.635322+00:00",
+  "architecture": "Dream Kinetic Forge Runtime & Platform Architecture v1.0",
+  "requirements": {
+    "php": ">=8.2",
+    "web_server": "Apache/cPanel-compatible",
+    "production_storage": "PostgreSQL via pdo_pgsql",
+    "bootstrap_storage": "JSON recovery adapter",
+    "https": "required for production certification"
+  },
+  "migrations": [
+    "001_forge_foundation.sql",
+    "002_production_foundation.sql"
+  ],
+  "release_gates": [
+    "php_syntax",
+    "foundation_tests",
+    "first_install_smoke",
+    "contractor_scope_smoke",
+    "agent_pack_authorization",
+    "prompt_to_build_shell",
+    "package_integrity",
+    "live_https_pending",
+    "live_postgresql_connection_pending"
+  ],
+  "known_pending": [
+    "Live PostgreSQL network connection/migration must be validated on the target server.",
+    "HTTPS must be active on forge.dreamkinetic.com before production certification.",
+    "F1.0 Data Builder generation is not included in this release."
+  ],
+  "files": [
+    {
+      "path": ".htaccess",
+      "sha256": "84d0cbe85a593a0d3b28e0eb51b7dfccfee28da0f49cb1d7aa5a35f12b433461",
+      "bytes": 457
+    },
+    {
+      "path": "START-HERE.txt",
+      "sha256": "cfe05a3a33ff59ae358c96aea77d6c3174f22c9d40aeaed66546ceac5885f111",
+      "bytes": 978
+    },
+    {
+      "path": "assets/app.css",
+      "sha256": "2328a2aac314ff1a7c63d48122c3c4c2f2b252a2a48b6c1a21e0e55ba9a3af2a",
+      "bytes": 16089
+    },
+    {
+      "path": "assets/app.js",
+      "sha256": "2467a999af4674a57c7a9bc913060fe15cf21dc09a7d2a82a4815110556a122e",
+      "bytes": 3923
+    },
+    {
+      "path": "forge-app/.htaccess",
+      "sha256": "fa28d421a28ed9b6f4b997d5119c2b8adbacff6e2dd119a179b71230f9664934",
+      "bytes": 19
+    },
+    {
+      "path": "forge-app/README.md",
+      "sha256": "051b76a7bc50a057cc27507da5e11564186bb68347fb2f73b9e199d1b7477c92",
+      "bytes": 1090
+    },
+    {
+      "path": "forge-app/bin/forge",
+      "sha256": "e00305ba238bd1cd2fb9831072fd9b38c9c7c525ad6b1dd0de372cb1980c64ec",
+      "bytes": 1265
+    },
+    {
+      "path": "forge-app/config/forge.php",
+      "sha256": "b273822dbf1643bd67695793af0536e4d753115e3a5158416aafb20785e6c3e9",
+      "bytes": 490
+    },
+    {
+      "path": "forge-app/config/sbom.cdx.json",
+      "sha256": "569bdee38105db566d125b407e7b2cddbd4cfc553381d4316d6fda169db1192d",
+      "bytes": 525
+    },
+    {
+      "path": "forge-app/database/migrations/001_forge_foundation.sql",
+      "sha256": "aa185dd19cfef40b24daba188754b967629ba3f1bb6d6707db8339d07c3f1fca",
+      "bytes": 5415
+    },
+    {
+      "path": "forge-app/database/migrations/002_production_foundation.sql",
+      "sha256": "c26771f58d6243d133f1409ac7378e5e5fbcfd8fb508fe41433366c4c19275fb",
+      "bytes": 771
+    },
+    {
+      "path": "forge-app/docs/BUILD-REPORT.md",
+      "sha256": "b0aba7d6597417d2586f4b44ff9019ffbeef7cf5ffbb7aa8c1df1548311ded85",
+      "bytes": 1746
+    },
+    {
+      "path": "forge-app/docs/DESIGN-DOSSIER.md",
+      "sha256": "df89df4d4f2939bbd8e3e533c104c69e11731dc4440c652a5b9f6504166418cd",
+      "bytes": 1895
+    },
+    {
+      "path": "forge-app/docs/Dream-Kinetic-Forge-PRD-v1.0.docx",
+      "sha256": "4e5a7e5ab1520e1b9d72a0da3163f5fd0ff3aa0494af4c80869a997d1108d0e5",
+      "bytes": 41079
+    },
+    {
+      "path": "forge-app/docs/Dream-Kinetic-Forge-Runtime-Platform-Architecture-v1.0.docx",
+      "sha256": "3da5579d6ae96527e2000a79f379fbdc4e935bf6ba9d34a5f3618bad19185718",
+      "bytes": 40049
+    },
+    {
+      "path": "forge-app/docs/INSTALLATION.md",
+      "sha256": "55295d985b1e7d7f1f5ed0a7b0273cbe5ef1e709b8df5888fa5a842ac1d98db5",
+      "bytes": 2088
+    },
+    {
+      "path": "forge-app/docs/RELEASE-NOTES.md",
+      "sha256": "b29af3b80c1debf3bb68d96c66153406d5f61fbaba325effee6e4763177efce9",
+      "bytes": 547
+    },
+    {
+      "path": "forge-app/docs/SIMPLE-TESTING-WORKFLOW.md",
+      "sha256": "50650055622a3232729d65246f46752b7a64d4f0abba12daf5b52e8098eaf8db",
+      "bytes": 1299
+    },
+    {
+      "path": "forge-app/docs/forge-builder-developer-concept.png",
+      "sha256": "fa3a7b8572bf86c82ef5d9c8492103eb542a18db79b788db38af4023e23fc6cf",
+      "bytes": 1729528
+    },
+    {
+      "path": "forge-app/public/index.php",
+      "sha256": "53ad7d4bacc71760aa9b668ae8ee56a6a2a9e74b74603bf8471bfe7ccdeb3728",
+      "bytes": 31745
+    },
+    {
+      "path": "forge-app/runtime/laravel/README.md",
+      "sha256": "35e6b8b3bff1499b090d169728748cd0a1dbaf6805dd6b66a442a3f9992c9e54",
+      "bytes": 889
+    },
+    {
+      "path": "forge-app/src/helpers.php",
+      "sha256": "98b0eaf3a98b660f284f58e4def1b3082a48981142c9e824aad5ccae0fd5e936",
+      "bytes": 33839
+    },
+    {
+      "path": "forge-app/storage/.keep",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "forge-app/tests/foundation.php",
+      "sha256": "5099066e1af8878e07f02a007e37bcb9b42c5515dcef0de4402569a6b5e36149",
+      "bytes": 1393
+    },
+    {
+      "path": "index.php",
+      "sha256": "b2f1d740620c9a726ec454e0df16af9fa46256a37f6f1b622c1911639602ac55",
+      "bytes": 55
+    }
+  ],
+  "version": "F0.4.1-Railway"
+}

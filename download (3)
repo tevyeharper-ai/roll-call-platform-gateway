@@ -1,0 +1,7 @@
+.git
+.gitignore
+*.zip
+*.sha256
+forge-app/storage/forge-local.php
+forge-app/storage/forge-infrastructure.php
+forge-app/storage/install-key.txt
