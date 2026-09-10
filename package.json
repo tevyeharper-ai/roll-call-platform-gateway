@@ -1,0 +1,11 @@
+{
+  "name": "roll-call-platform-gateway-p3.1.1",
+  "version": "3.1.1",
+  "private": true,
+  "type": "module",
+  "engines": {"node": ">=22"},
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node test.mjs"
+  }
+}
