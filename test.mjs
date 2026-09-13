@@ -7,10 +7,11 @@ import { createServer, loadConfig } from './server.mjs';
 const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
 const pub = publicKey.export({type:'spki',format:'pem'}).toString();
 const priv = privateKey.export({type:'pkcs8',format:'pem'}).toString();
+const consumers=['events','field','experiential','asmbly'];
 const config = loadConfig({
   PORT:'0', RC_GATEWAY_SERVICE_ID:'roll-call-platform-gateway:p3.2-test', RC_GATEWAY_ENV:'staging',
   RC_GATEWAY_PUBLIC_KEY_PEM:pub, RC_GATEWAY_PRIVATE_KEY_PEM:priv,
-  RC_REFERENCE_CONSUMERS:'events,field,experiential'
+  RC_REFERENCE_CONSUMERS:consumers.join(',')
 });
 let server, base;
 
@@ -29,9 +30,10 @@ function sign(payload, key=privateKey) {
 function claim(overrides={}) { const now=Math.floor(Date.now()/1000); return {principal_id:'user-1',principal_type:'human',tenant_id:'tenant-1',application_id:'events',workspace_id:'ops',environment:'staging',permissions:['events.read'],roles:['operator'],assurance:'staging-test',iat:now-1,exp:now+300,assertion_id:'assert-1',trace_id:'tr-1',correlation_id:'corr-1',...overrides}; }
 
 test('health remains compatible', async()=>{ const {r,b}=await get('/health'); assert.equal(r.status,200); assert.equal(b.status,'ok'); assert.equal(b.service_id,config.serviceId); });
-test('metadata preserves Avery readiness contract', async()=>{ const {r,b}=await get('/bootstrap/v1/metadata'); assert.equal(r.status,200); assert.equal(b.service_id,config.serviceId); assert.equal(b.version,'P3.2.0'); assert.deepEqual(b.reference_consumers,['events','field','experiential']); });
-test('ready remains green', async()=>{ const {r,b}=await get('/ready'); assert.equal(r.status,200); assert.equal(b.status,'ready'); assert.deepEqual(b.consumers,['events','field','experiential']); });
-for (const consumer of ['events','field','experiential']) test(`${consumer} reference returns governed contract`, async()=>{ const headers={'x-roll-call-context-id':'ctx-1','x-roll-call-request-id':'req-1','x-roll-call-trace-id':'tr-1','x-roll-call-correlation-id':'corr-1'}; const {r,b}=await get(`/v1/${consumer}/reference`,headers); assert.equal(r.status,200); assert.equal(b.consumer,consumer); assert.equal(b.contract_version,'P3.2'); assert.equal(b.correlation_id,'corr-1'); assert.equal(r.headers.get('x-roll-call-correlation-id'),'corr-1'); });
+test('metadata preserves existing consumers and advertises ASMBLY', async()=>{ const {r,b}=await get('/bootstrap/v1/metadata'); assert.equal(r.status,200); assert.equal(b.service_id,config.serviceId); assert.equal(b.version,'P3.2.0'); assert.deepEqual(b.reference_consumers,consumers); });
+test('ready remains green with ASMBLY added', async()=>{ const {r,b}=await get('/ready'); assert.equal(r.status,200); assert.equal(b.status,'ready'); assert.deepEqual(b.consumers,consumers); });
+for (const consumer of consumers) test(`${consumer} reference returns governed contract`, async()=>{ const headers={'x-roll-call-context-id':'ctx-1','x-roll-call-request-id':'req-1','x-roll-call-trace-id':'tr-1','x-roll-call-correlation-id':'corr-1'}; const {r,b}=await get(`/v1/${consumer}/reference`,headers); assert.equal(r.status,200); assert.equal(b.consumer,consumer); assert.equal(b.contract_version,'P3.2'); assert.equal(b.correlation_id,'corr-1'); assert.equal(r.headers.get('x-roll-call-correlation-id'),'corr-1'); });
+test('ASMBLY reference is contract metadata only and exposes no app data',async()=>{const {r,b}=await get('/v1/asmbly/reference');assert.equal(r.status,200);assert.deepEqual(Object.keys(b).sort(),['consumer','context_id','contract_version','correlation_id','environment','gateway_service_id','request_id','status','trace_id'].sort());assert.equal(JSON.stringify(b).includes('event'),false);assert.equal(JSON.stringify(b).includes('place'),false);});
 test('unsupported reference fails closed', async()=>{ const {r,b}=await get('/v1/unknown/reference'); assert.equal(r.status,404); assert.equal(b.error,'unsupported_consumer'); });
 test('identity metadata exposes public verification only', async()=>{ const {r,b}=await get('/v1/identity/metadata'); assert.equal(r.status,200); assert.equal(b.issuance_available,false); assert.equal(b.algorithm,'RS256'); assert.ok(b.public_jwk?.n); assert.equal(JSON.stringify(b).includes('PRIVATE KEY'),false); });
 test('valid identity assertion verifies', async()=>{ const {r,b}=await post('/v1/identity/assertions/verify',{assertion:sign(claim())}); assert.equal(r.status,200); assert.equal(b.ok,true); assert.equal(b.principal.principal_id,'user-1'); });
