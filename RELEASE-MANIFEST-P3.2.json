@@ -1,0 +1,21 @@
+{
+  "release": "P3.2.0",
+  "component": "roll-call-platform-gateway",
+  "status": "staging-candidate-source",
+  "base_branch": "gateway-recovery",
+  "target_branch": "feature/p3.2-identity-reference-contracts",
+  "production_cutover_authorized": false,
+  "contracts": [
+    "/health",
+    "/bootstrap/v1/metadata",
+    "/ready",
+    "/v1/events/reference",
+    "/v1/field/reference",
+    "/v1/experiential/reference",
+    "/v1/identity/metadata",
+    "/v1/identity/assertions/verify"
+  ],
+  "identity_assertion_issuance": "not_available",
+  "aab_100_before": 60,
+  "aab_100_target_after": 65
+}
