@@ -4,7 +4,7 @@ import { URL } from 'node:url';
 
 const VERSION = 'P3.2.0';
 const SERVICE = 'roll-call-platform-gateway';
-const DEFAULT_CONSUMERS = ['events', 'field', 'experiential'];
+const DEFAULT_CONSUMERS = ['events', 'field', 'experiential', 'asmbly'];
 const CORRELATION_HEADERS = [
   'x-roll-call-context-id',
   'x-roll-call-request-id',
@@ -135,7 +135,7 @@ export function createServer(config = loadConfig()) {
         }, correlation);
       }
 
-      const ref = url.pathname.match(/^\/v1\/(events|field|experiential)\/reference$/);
+      const ref = url.pathname.match(/^\/v1\/(events|field|experiential|asmbly)\/reference$/);
       if (req.method === 'GET' && ref) {
         const consumer = ref[1];
         if (!config.consumers.includes(consumer)) return send(res, 404, { error:'unsupported_consumer', consumer }, correlation);
