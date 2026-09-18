@@ -1,0 +1,8 @@
+import pg from 'pg'; const {Pool}=pg;
+export function createStore(config){const pool=new Pool({host:config.db.host,port:config.db.port,database:config.db.database,user:config.db.user,password:config.db.password,ssl:config.db.ssl?{rejectUnauthorized:false}:false,max:5,connectionTimeoutMillis:5000,idleTimeoutMillis:30000});return {
+ async ready(){await pool.query('select 1');return true;},
+ async authorizationData(i){const [o,m,g]=await Promise.all([pool.query('select id,slug,display_name,kind,parent_id,status from platform_access.organizations order by id'),pool.query('select issuer,subject_id,organization_id,role,status from platform_access.memberships where issuer=$1 and subject_id=$2',[i.issuer,i.subjectId]),pool.query('select role,resource,action,inherit_descendants from platform_access.role_grants')]);return {organizations:o.rows,memberships:m.rows,grants:g.rows};},
+ async receipt(x){await pool.query(`insert into platform_access.access_decision_receipts(id,request_id,trace_id,correlation_id,client_id,issuer,subject_id,organization_id,resource,action,decision,reason,policy_version,identity_acr) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,[x.id,x.requestId,x.traceId,x.correlationId,x.clientId,x.issuer,x.subjectId,x.organizationId,x.resource,x.action,x.decision,x.reason,x.policyVersion,x.identityAcr]);return x;},
+ async getReceipt(id){const r=await pool.query('select id,request_id,trace_id,correlation_id,client_id,issuer,subject_id,organization_id,resource,action,decision,reason,policy_version,identity_acr,created_at from platform_access.access_decision_receipts where id=$1',[id]);return r.rows[0]||null;},
+ async close(){await pool.end();}
+};}
