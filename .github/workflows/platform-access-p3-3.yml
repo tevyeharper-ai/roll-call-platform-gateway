@@ -1,0 +1,40 @@
+name: Platform Access P3.3
+
+on:
+  push:
+    branches:
+      - feature/p3.3-access-tenant-audit
+      - p3-3-access-tenant-audit
+  pull_request:
+    paths:
+      - 'access/**'
+      - 'docs/API-CONTRACT-MATRIX-P3.3.md'
+      - 'docs/DESIGN-DOSSIER-P3.3.md'
+      - '.github/workflows/platform-access-p3-3.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  certify:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: access
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: access/package.json
+      - name: Install
+        run: npm install
+      - name: Dependency audit
+        run: npm audit --audit-level=high
+      - name: Syntax
+        run: npm run check
+      - name: Policy and contract tests
+        run: npm test
+      - name: Build runtime image
+        run: docker build -t platform-access:p3.3 .
