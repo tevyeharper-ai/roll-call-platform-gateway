@@ -2,9 +2,9 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import { URL } from 'node:url';
 
-const VERSION = 'P3.3.0';
+const VERSION = 'P3.4.0';
 const SERVICE = 'roll-call-platform-gateway';
-const DEFAULT_CONSUMERS = ['events', 'field', 'experiential', 'asmbly'];
+const DEFAULT_CONSUMERS = ['events', 'broadcast', 'field', 'experiential', 'asmbly'];
 const CORRELATION_HEADERS = [
   'x-roll-call-context-id',
   'x-roll-call-request-id',
@@ -38,7 +38,7 @@ function cleanUrl(value=''){ return String(value||'').trim().replace(/\/$/,''); 
 function uuid(value){ return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value||'')); }
 
 export function loadConfig(env = process.env) {
-  const serviceId = env.RC_GATEWAY_SERVICE_ID || 'roll-call-platform-gateway:p3.3-staging';
+  const serviceId = env.RC_GATEWAY_SERVICE_ID || 'roll-call-platform-gateway:p3.4-staging';
   const environment = env.RC_GATEWAY_ENV || env.NODE_ENV || 'development';
   const publicKeyPem = env.RC_GATEWAY_PUBLIC_KEY_PEM || '';
   const privateKeyPem = env.RC_GATEWAY_PRIVATE_KEY_PEM || '';
@@ -52,6 +52,10 @@ export function loadConfig(env = process.env) {
     keyId: nonempty(publicKeyPem) ? keyId(publicKeyPem) : null,
     consumers,
     wordpressOrigin: env.RC_WORDPRESS_ORIGIN || null,
+    platformAccess: {
+      url: cleanUrl(env.RC_PLATFORM_ACCESS_URL),
+      serviceKey: String(env.RC_PLATFORM_ACCESS_GATEWAY_KEY || '').trim()
+    },
     omni: {
       serviceKeyHash: String(env.RC_OMNI_GATEWAY_SERVICE_KEY_SHA256 || '').trim(),
       accessUrl: cleanUrl(env.RC_PLATFORM_ACCESS_URL),
@@ -64,6 +68,13 @@ export function loadConfig(env = process.env) {
       maxReceiptAgeSeconds: Number(env.RC_ACCESS_RECEIPT_MAX_AGE_SECONDS || 120)
     }
   };
+}
+
+export function platformAccessFailures(config){
+  const f=[];
+  if(!config.platformAccess.url.startsWith('https://'))f.push('platform_access_url_invalid');
+  if(!config.platformAccess.serviceKey)f.push('platform_access_gateway_key_missing');
+  return f;
 }
 
 export function omniReadFailures(config){
@@ -146,6 +157,27 @@ async function fetchJson(fetchImpl,url,options={}){
   return {response,body};
 }
 
+async function forwardPlatformAccess({config,fetchImpl,correlation,path,payload}){
+  const failures=platformAccessFailures(config);
+  if(failures.length)return {ok:false,status:503,body:{error:'platform_access_not_ready',failures}};
+  const result=await fetchJson(fetchImpl,config.platformAccess.url+path,{
+    method:'POST',
+    headers:{
+      'content-type':'application/json',
+      'accept':'application/json',
+      'x-platform-service-key':config.platformAccess.serviceKey,
+      'x-roll-call-request-id':correlation['x-roll-call-request-id'],
+      'x-roll-call-trace-id':correlation['x-roll-call-trace-id'],
+      'x-roll-call-correlation-id':correlation['x-roll-call-correlation-id'],
+      'x-roll-call-context-id':correlation['x-roll-call-context-id']||''
+    },
+    body:JSON.stringify(payload||{})
+  });
+  return {ok:result.response.ok,status:result.response.status,body:result.body||{error:'platform_access_empty_response'}};
+}
+
+
+
 export function validateAccessReceipt(receipt,{organizationId,resource,action='read',maxAgeSeconds=120,now=Date.now()}){
   if(!receipt)return {ok:false,error:'access_receipt_missing'};
   if(receipt.decision!=='allow')return {ok:false,error:'access_receipt_not_allowed'};
@@ -205,7 +237,8 @@ export function createServer(config = loadConfig(), deps={}) {
         return send(res, 200, {
           status:'ok', service:SERVICE, service_id:config.serviceId, version:VERSION,
           environment:config.environment, reference_consumers:config.consumers, signing,
-          omni_read_broker:{available:omniReadFailures(config).length===0,readiness_endpoint:'/v1/omni/readiness'}
+          omni_read_broker:{available:omniReadFailures(config).length===0,readiness_endpoint:'/v1/omni/readiness'},
+          roll_call_core:{available:platformAccessFailures(config).length===0,context_endpoint:'/v1/core/context',entitlement_endpoint:'/v1/entitlements/resolve',access_decision_endpoint:'/v1/access/decisions'}
         }, correlation);
       }
       if (req.method === 'GET' && url.pathname === '/ready') {
@@ -217,7 +250,8 @@ export function createServer(config = loadConfig(), deps={}) {
           status:'not_ready', service_id:config.serviceId, version:VERSION, reason:failures.join(','), consumers:config.consumers
         } : {
           status:'ready', service_id:config.serviceId, version:VERSION, environment:config.environment, consumers:config.consumers,
-          omni_read_ready:omniReadFailures(config).length===0
+          omni_read_ready:omniReadFailures(config).length===0,
+          roll_call_core_ready:platformAccessFailures(config).length===0
         }, correlation);
       }
       if(req.method==='GET'&&url.pathname==='/v1/omni/readiness'){
@@ -230,12 +264,12 @@ export function createServer(config = loadConfig(), deps={}) {
         },correlation);
       }
 
-      const ref = url.pathname.match(/^\/v1\/(events|field|experiential|asmbly)\/reference$/);
+      const ref = url.pathname.match(/^\/v1\/(events|broadcast|field|experiential|asmbly)\/reference$/);
       if (req.method === 'GET' && ref) {
         const consumer = ref[1];
         if (!config.consumers.includes(consumer)) return send(res, 404, { error:'unsupported_consumer', consumer }, correlation);
         return send(res, 200, {
-          status:'ok', consumer, contract_version:'P3.2', gateway_service_id:config.serviceId,
+          status:'ok', consumer, contract_version:'P3.4', gateway_service_id:config.serviceId,
           environment:config.environment,
           context_id:correlation['x-roll-call-context-id'] || null,
           request_id:correlation['x-roll-call-request-id'],
@@ -264,6 +298,12 @@ export function createServer(config = loadConfig(), deps={}) {
       }
       if (req.method === 'POST' && url.pathname === '/v1/identity/assertions') {
         return send(res, 501, {error:'identity_assertion_issuance_not_available',reason:'BSV Identity is the authoritative issuer; Gateway issuance remains disabled.'}, correlation);
+      }
+
+      if(req.method==='POST'&&['/v1/core/context','/v1/entitlements/resolve','/v1/access/decisions'].includes(url.pathname)){
+        const payload=await readJson(req);
+        const result=await forwardPlatformAccess({config,fetchImpl,correlation,path:url.pathname,payload});
+        return send(res,result.status,result.body,correlation);
       }
 
       const readMatch=url.pathname.match(/^\/v1\/omni\/(work|calendar)\/read$/);
@@ -301,7 +341,8 @@ export function start(env = process.env) {
       event:'gateway_started', service:SERVICE, service_id:config.serviceId, version:VERSION,
       environment:config.environment, port:config.port, reference_consumers:config.consumers,
       identity_verification:Boolean(config.publicKeyPem), identity_issuance:false,
-      omni_read_ready:omniReadFailures(config).length===0,timestamp:nowIso()
+      omni_read_ready:omniReadFailures(config).length===0,
+      roll_call_core_ready:platformAccessFailures(config).length===0,timestamp:nowIso()
     }));
   });
   return server;
