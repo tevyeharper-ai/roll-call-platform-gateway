@@ -1,8 +1,9 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { URL } from 'node:url';
+import {beginBrowserLogin,browserAuthFailures,completeBrowserLogin,loadBrowserAuthConfig,logoutCookies,readBrowserCredentials,safeReturnTo} from './browser-session.mjs';
 
-const VERSION = 'P3.4.0';
+const VERSION = 'P3.5.0';
 const SERVICE = 'roll-call-platform-gateway';
 const DEFAULT_CONSUMERS = ['events', 'broadcast', 'field', 'experiential', 'asmbly'];
 const CORRELATION_HEADERS = [
@@ -52,7 +53,7 @@ function workspaceBinding(bindings,organizationId,workspaceId){
 }
 
 export function loadConfig(env = process.env) {
-  const serviceId = env.RC_GATEWAY_SERVICE_ID || 'roll-call-platform-gateway:p3.4-staging';
+  const serviceId = env.RC_GATEWAY_SERVICE_ID || 'roll-call-platform-gateway:p3.5-staging';
   const environment = env.RC_GATEWAY_ENV || env.NODE_ENV || 'development';
   const publicKeyPem = env.RC_GATEWAY_PUBLIC_KEY_PEM || '';
   const privateKeyPem = env.RC_GATEWAY_PRIVATE_KEY_PEM || '';
@@ -65,6 +66,7 @@ export function loadConfig(env = process.env) {
     privateKeyPem,
     keyId: nonempty(publicKeyPem) ? keyId(publicKeyPem) : null,
     consumers,
+    browserAuth:loadBrowserAuthConfig(env),
     wordpressOrigin: env.RC_WORDPRESS_ORIGIN || null,
     platformAccess: {
       url: cleanUrl(env.RC_PLATFORM_ACCESS_URL),
@@ -136,6 +138,26 @@ function send(res, status, payload, correlation = null) {
   res.end(body);
 }
 
+function redirect(res,location,{cookies=[]}={}){
+  const headers={location,'cache-control':'no-store','x-content-type-options':'nosniff'};
+  if(cookies.length)headers['set-cookie']=cookies;
+  res.writeHead(302,headers);res.end();
+}
+function toolkitId(value=''){
+  const raw=String(value||'').trim().toLowerCase();
+  const map={events:'roll-call.events',broadcast:'roll-call.broadcast',field:'roll-call.field',experiential:'roll-call.experiential'};
+  return map[raw]||(['roll-call.events','roll-call.broadcast','roll-call.field','roll-call.experiential'].includes(raw)?raw:null);
+}
+function shellToolkits(entitlements=[]){
+  const active=new Map(entitlements.map(item=>[item.toolkit_id,item]));
+  return [
+    ['roll-call.events','Events','/app/events'],
+    ['roll-call.broadcast','Broadcast','/app/broadcast'],
+    ['roll-call.field','Field','/app/field'],
+    ['roll-call.experiential','Experiential','/app/experiential']
+  ].map(([id,label,href])=>({toolkit_id:id,label,href,entitled:active.has(id),status:active.get(id)?.status||null}));
+}
+
 async function readJson(req) {
   let raw = '';
   for await (const chunk of req) {
@@ -197,6 +219,89 @@ async function forwardPlatformAccess({config,fetchImpl,correlation,path,payload}
     body:JSON.stringify(payload||{})
   });
   return {ok:result.response.ok,status:result.response.status,body:result.body||{error:'platform_access_empty_response'}};
+}
+
+
+async function resolveShellSession({config,fetchImpl,correlation,cookieHeader,query}){
+  const failures=browserAuthFailures(config.browserAuth);
+  if(failures.length)return {status:503,body:{authenticated:false,error:'roll_call_browser_auth_not_ready',failures}};
+  const credentials=readBrowserCredentials(cookieHeader,config.browserAuth);
+  if(!credentials.session||!credentials.identityToken)return {status:401,body:{authenticated:false,error:'roll_call_session_required'}};
+
+  const discovered=await forwardPlatformAccess({
+    config,fetchImpl,correlation,path:'/v1/core/workspaces',
+    payload:{identity_token:credentials.identityToken}
+  });
+  if(!discovered.ok)return {status:discovered.status,body:{authenticated:true,error:'workspace_discovery_failed',detail:discovered.body}};
+  const workspaces=Array.isArray(discovered.body?.workspaces)?discovered.body.workspaces:[];
+  if(!workspaces.length)return {status:403,body:{authenticated:true,error:'no_authorized_roll_call_workspace',workspaces:[]}};
+
+  const requestedWorkspace=String(query.get('workspace_id')||'').trim();
+  const requestedOrganization=String(query.get('organization_id')||'').trim();
+  let candidates=workspaces;
+  if(requestedWorkspace)candidates=candidates.filter(item=>item?.workspace?.workspace_id===requestedWorkspace);
+  if(requestedOrganization)candidates=candidates.filter(item=>item?.organization?.organization_id===requestedOrganization);
+  if(!candidates.length)return {status:403,body:{authenticated:true,error:'workspace_not_authorized',workspaces:workspaces.map(item=>({organization:item.organization,workspace:item.workspace}))}};
+  if(candidates.length>1&&!requestedWorkspace)return {status:409,body:{
+    authenticated:true,error:'workspace_selection_required',
+    workspaces:candidates.map(item=>({organization:item.organization,workspace:item.workspace,entitlements:item.entitlements}))
+  }};
+  const selected=candidates[0];
+
+  const context=await forwardPlatformAccess({
+    config,fetchImpl,correlation,path:'/v1/core/context',
+    payload:{
+      identity_token:credentials.identityToken,
+      organization_id:selected.organization.organization_id,
+      workspace_id:selected.workspace.workspace_id
+    }
+  });
+  if(!context.ok)return {status:context.status,body:{authenticated:true,error:'core_context_failed',detail:context.body}};
+
+  const entitlements=Array.isArray(context.body?.entitlements)?context.body.entitlements:[];
+  const toolkits=shellToolkits(entitlements);
+  const requestedToolkit=toolkitId(query.get('toolkit')||'');
+  const firstEntitled=toolkits.find(item=>item.entitled)?.toolkit_id||null;
+  const activeToolkit=requestedToolkit||firstEntitled;
+  if(requestedToolkit&&!toolkits.find(item=>item.toolkit_id===requestedToolkit&&item.entitled)){
+    return {status:403,body:{authenticated:true,error:'toolkit_entitlement_required',toolkit_id:requestedToolkit,toolkits}};
+  }
+  if(!activeToolkit)return {status:403,body:{authenticated:true,error:'no_active_toolkit_entitlement',toolkits}};
+
+  return {status:200,body:{
+    authenticated:true,
+    schema:'roll-call.shell-session.v1',
+    shell:{
+      schema:'roll-call.application-shell.v1',
+      organization:{organization_id:selected.organization.organization_id,name:selected.organization.name},
+      workspace:{workspace_id:selected.workspace.workspace_id,name:selected.workspace.name},
+      actor:{
+        subject_id:credentials.session.sub,
+        display_name:credentials.session.name||credentials.session.preferredUsername||credentials.session.email||'Roll Call User',
+        avatar_url:null
+      },
+      toolkits,
+      active_toolkit:activeToolkit,
+      navigation:{
+        marketplace_href:'/app/marketplace',
+        avery_available:true,
+        settings_href:'/app/settings',
+        account_href:'/app/account'
+      }
+    },
+    authorization:{
+      roles:context.body?.roles||[],
+      effective_permissions:context.body?.effective_permissions||[],
+      entitlements
+    },
+    identity:{
+      issuer:credentials.session.issuer,
+      acr:credentials.session.acr||null,
+      amr:credentials.session.amr||[],
+      expires_at:new Date(credentials.session.expiresAt).toISOString()
+    },
+    environment:config.environment
+  }};
 }
 
 async function readCanonicalEventReference({config,fetchImpl,correlation,eventKey,payload}){
@@ -384,7 +489,8 @@ export function createServer(config = loadConfig(), deps={}) {
           status:'ok', service:SERVICE, service_id:config.serviceId, version:VERSION,
           environment:config.environment, reference_consumers:config.consumers, signing,
           omni_read_broker:{available:omniReadFailures(config).length===0,readiness_endpoint:'/v1/omni/readiness'},
-          roll_call_core:{available:platformAccessFailures(config).length===0,context_endpoint:'/v1/core/context',entitlement_endpoint:'/v1/entitlements/resolve',access_decision_endpoint:'/v1/access/decisions'}
+          roll_call_core:{available:platformAccessFailures(config).length===0,context_endpoint:'/v1/core/context',workspace_discovery_endpoint:'/v1/core/workspaces',entitlement_endpoint:'/v1/entitlements/resolve',access_decision_endpoint:'/v1/access/decisions'},
+          roll_call_browser_session:{available:browserAuthFailures(config.browserAuth).length===0,login_endpoint:'/api/auth/login',callback_endpoint:'/auth/callback',session_endpoint:'/v1/shell/session'}
         }, correlation);
       }
       if (req.method === 'GET' && url.pathname === '/ready') {
@@ -397,7 +503,8 @@ export function createServer(config = loadConfig(), deps={}) {
         } : {
           status:'ready', service_id:config.serviceId, version:VERSION, environment:config.environment, consumers:config.consumers,
           omni_read_ready:omniReadFailures(config).length===0,
-          roll_call_core_ready:platformAccessFailures(config).length===0
+          roll_call_core_ready:platformAccessFailures(config).length===0,
+          roll_call_browser_session_ready:browserAuthFailures(config.browserAuth).length===0
         }, correlation);
       }
       if(req.method==='GET'&&url.pathname==='/v1/omni/readiness'){
@@ -425,6 +532,47 @@ export function createServer(config = loadConfig(), deps={}) {
       }
       if (req.method === 'GET' && url.pathname.startsWith('/v1/') && url.pathname.endsWith('/reference')) {
         return send(res, 404, { error:'unsupported_consumer' }, correlation);
+      }
+
+
+      if(req.method==='GET'&&url.pathname==='/api/auth/login'){
+        const failures=browserAuthFailures(config.browserAuth);
+        if(failures.length)return send(res,503,{error:'roll_call_browser_auth_not_ready',failures},correlation);
+        try{
+          const begin=await beginBrowserLogin(config.browserAuth,{returnTo:safeReturnTo(url.searchParams.get('returnTo'))},fetchImpl);
+          return redirect(res,begin.authorizationUrl,{cookies:begin.cookies});
+        }catch(error){
+          return send(res,503,{error:'oidc_login_unavailable',detail:String(error?.message||error)},correlation);
+        }
+      }
+
+      if(req.method==='GET'&&url.pathname==='/auth/callback'){
+        const failures=browserAuthFailures(config.browserAuth);
+        if(failures.length)return send(res,503,{error:'roll_call_browser_auth_not_ready',failures},correlation);
+        const credentials=readBrowserCredentials(req.headers.cookie||'',config.browserAuth);
+        try{
+          const completed=await completeBrowserLogin(config.browserAuth,{
+            code:url.searchParams.get('code'),
+            state:url.searchParams.get('state'),
+            expectedState:credentials.state,
+            verifier:credentials.verifier,
+            nonce:credentials.nonce
+          },fetchImpl);
+          return redirect(res,new URL(safeReturnTo(credentials.returnTo||'/app'),config.browserAuth.publicUrl).toString(),{cookies:completed.cookies});
+        }catch(error){
+          return redirect(res,new URL('/?identityError='+encodeURIComponent(String(error?.message||'identity_callback_failed')),config.browserAuth.publicUrl).toString(),{cookies:logoutCookies()});
+        }
+      }
+
+      if((req.method==='POST'||req.method==='GET')&&url.pathname==='/api/auth/logout'){
+        return redirect(res,config.browserAuth.publicUrl||'/',{cookies:logoutCookies()});
+      }
+
+      if(req.method==='GET'&&url.pathname==='/v1/shell/session'){
+        const result=await resolveShellSession({
+          config,fetchImpl,correlation,cookieHeader:req.headers.cookie||'',query:url.searchParams
+        });
+        return send(res,result.status,result.body,correlation);
       }
 
       if (req.method === 'GET' && url.pathname === '/v1/identity/metadata') {
@@ -504,7 +652,8 @@ export function start(env = process.env) {
       environment:config.environment, port:config.port, reference_consumers:config.consumers,
       identity_verification:Boolean(config.publicKeyPem), identity_issuance:false,
       omni_read_ready:omniReadFailures(config).length===0,
-      roll_call_core_ready:platformAccessFailures(config).length===0,timestamp:nowIso()
+      roll_call_core_ready:platformAccessFailures(config).length===0,
+      roll_call_browser_session_ready:browserAuthFailures(config.browserAuth).length===0,timestamp:nowIso()
     }));
   });
   return server;
