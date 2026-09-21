@@ -35,10 +35,19 @@ The browser/client never receives the Platform Access service key.
 - Roll Call Broadcast owns Broadcast domain state.
 - Avery remains the canonical shared intelligence runtime.
 
+## Canonical Event Reference broker
+`POST /v1/events/{event_id}/reference` now:
+- resolves a trusted Core workspace → Events tenant/workspace binding;
+- requests a workspace-scoped `events.read` decision from Platform Access;
+- forwards only the trusted binding to the Events owner adapter;
+- returns `roll-call.event-reference.v1` with the access receipt provenance.
+
+Callers cannot supply Events-local tenant/workspace IDs directly.
+
 ## Next P3.4 work
 - same-origin application path routing for `/app/events/*` and `/app/broadcast/*`
-- governed Event Reference adapter
 - Event → Promote → Broadcast intent mediation
+- shared Shell session binding
 - Staging integration certification
 
 No Production or DNS mutation is authorized by this branch.
