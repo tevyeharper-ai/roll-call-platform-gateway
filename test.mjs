@@ -19,6 +19,7 @@ const config = loadConfig({
   RC_OMNI_GATEWAY_SERVICE_KEY_SHA256:hash(omniKey),
   RC_PLATFORM_ACCESS_URL:'https://access.test',RC_PLATFORM_ACCESS_GATEWAY_KEY:accessKey,
   RC_ROLL_CALL_EVENTS_READ_URL:'https://events.test',RC_ROLL_CALL_EVENTS_READ_KEY:ownerKey,
+  RC_EVENTS_WORKSPACE_BINDINGS_JSON:JSON.stringify({'roll-call:workspace-1':{tenant_id:tenantId,workspace_id:workspaceId}}),
   RC_OMNI_ROLL_CALL_ORGANIZATION_ID:'roll-call-events',RC_OMNI_ROLL_CALL_TENANT_ID:tenantId,RC_OMNI_ROLL_CALL_WORKSPACE_ID:workspaceId,
   RC_ACCESS_RECEIPT_MAX_AGE_SECONDS:'120'
 });
@@ -50,6 +51,24 @@ const fetchImpl=async(url,options={})=>{
     assert.equal(options.headers['x-platform-service-key'],accessKey);
     const payload=JSON.parse(options.body);
     return new Response(JSON.stringify({decision:'allow',reason:'explicit_workspace_membership',receipt_id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',subject_id:'subject-1',organization_id:payload.organization_id,workspace_id:payload.workspace_id,resource:payload.resource,action:payload.action,policy_version:'P3.4.0'}),{status:200,headers:{'content-type':'application/json'}});
+  }
+  if(target==='https://events.test/api/platform/events/event-123/reference'){
+    assert.equal(options.headers['x-platform-service-key'],ownerKey);
+    assert.equal(options.headers['x-roll-call-organization-id'],'roll-call');
+    assert.equal(options.headers['x-roll-call-workspace-id'],'workspace-1');
+    assert.equal(options.headers['x-roll-call-events-tenant-id'],tenantId);
+    assert.equal(options.headers['x-roll-call-events-workspace-id'],workspaceId);
+    assert.equal(options.headers['x-roll-call-access-receipt-id'],'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
+    return new Response(JSON.stringify({
+      ok:true,
+      contract:'roll-call.event-reference.v1',
+      event_reference:{
+        schema:'roll-call.event-reference.v1',event_id:'event-123',organization_id:'roll-call',workspace_id:'workspace-1',
+        name:'Launch Event',status:'Planning',lifecycle:'Source of Truth',timezone:'America/Los_Angeles',public_state:'Published',
+        links:{public_event_url:'https://rollcallevents.co/e/launch-event',registration_url:'https://rollcallevents.co/e/launch-event#registration',ticket_url:'https://rollcallevents.co/e/launch-event#registration'},
+        source:{authority:'events.clean-host-source-of-truth.v1',application_id:'roll-call.events',updated_at:'2026-09-21T00:00:00.000Z'}
+      }
+    }),{status:200,headers:{'content-type':'application/json'}});
   }
   if(target==='https://events.test/api/platform/omni/work'){
     assert.equal(options.headers['x-platform-service-key'],ownerKey);
@@ -89,6 +108,19 @@ test('issuance remains unavailable', async()=>{ const {r}=await post('/v1/identi
 
 test('Core context forwards through Gateway service identity',async()=>{const {r,b}=await post('/v1/core/context',{identity_token:'token',organization_id:'roll-call',workspace_id:'workspace-1'},{'x-roll-call-correlation-id':'corr-core'});assert.equal(r.status,200);assert.equal(b.schema,'roll-call.core-context.v1');assert.equal(b.entitlements.some(e=>e.toolkit_id==='roll-call.broadcast'),true);const call=accessCalls.find(x=>x.path==='/v1/core/context');assert.equal(call.options.headers['x-roll-call-correlation-id'],'corr-core');});
 test('Broadcast entitlement resolves independently through Gateway',async()=>{const {r,b}=await post('/v1/entitlements/resolve',{identity_token:'token',organization_id:'roll-call',workspace_id:'workspace-1',toolkit_id:'roll-call.broadcast'});assert.equal(r.status,200);assert.equal(b.entitled,true);assert.equal(b.toolkit_id,'roll-call.broadcast');});
+test('Gateway brokers canonical Event reference after access decision',async()=>{
+  const {r,b}=await post('/v1/events/event-123/reference',{identity_token:'token',organization_id:'roll-call',workspace_id:'workspace-1'});
+  assert.equal(r.status,200);
+  assert.equal(b.contract,'roll-call.event-reference.v1');
+  assert.equal(b.event_reference.event_id,'event-123');
+  assert.equal(b.authorization.decision,'allow');
+  assert.equal(b.authorization.receipt_id,'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
+});
+test('Event reference fails closed when shared workspace has no Events binding',async()=>{
+  const {r,b}=await post('/v1/events/event-123/reference',{identity_token:'token',organization_id:'roll-call',workspace_id:'unbound'});
+  assert.equal(r.status,409);
+  assert.equal(b.error,'events_workspace_binding_missing');
+});
 test('Gateway forwards workspace-scoped access decision',async()=>{const {r,b}=await post('/v1/access/decisions',{identity_token:'token',organization_id:'roll-call',workspace_id:'workspace-1',resource:'broadcast',action:'write'});assert.equal(r.status,200);assert.equal(b.decision,'allow');assert.equal(b.resource,'broadcast');assert.equal(b.workspace_id,'workspace-1');});
 
 test('receipt validation rejects stale, mismatched and denied receipts',()=>{
