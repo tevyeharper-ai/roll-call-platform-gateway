@@ -36,6 +36,20 @@ function requiredIdentityClaims(payload) {
 }
 function cleanUrl(value=''){ return String(value||'').trim().replace(/\/$/,''); }
 function uuid(value){ return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value||'')); }
+function parseWorkspaceBindings(raw=''){
+  if(!String(raw||'').trim())return {};
+  try{
+    const value=JSON.parse(raw);
+    if(!value||typeof value!=='object'||Array.isArray(value))return {};
+    return value;
+  }catch{return {};}
+}
+function workspaceBinding(bindings,organizationId,workspaceId){
+  const value=bindings?.[organizationId+':'+workspaceId]||bindings?.[workspaceId]||null;
+  if(!value||typeof value!=='object')return null;
+  const tenantId=String(value.tenant_id||'').trim(),eventsWorkspaceId=String(value.workspace_id||'').trim();
+  return tenantId&&eventsWorkspaceId?{tenant_id:tenantId,workspace_id:eventsWorkspaceId}:null;
+}
 
 export function loadConfig(env = process.env) {
   const serviceId = env.RC_GATEWAY_SERVICE_ID || 'roll-call-platform-gateway:p3.4-staging';
@@ -55,6 +69,11 @@ export function loadConfig(env = process.env) {
     platformAccess: {
       url: cleanUrl(env.RC_PLATFORM_ACCESS_URL),
       serviceKey: String(env.RC_PLATFORM_ACCESS_GATEWAY_KEY || '').trim()
+    },
+    eventsOwner:{
+      baseUrl:cleanUrl(env.RC_ROLL_CALL_EVENTS_READ_URL),
+      serviceKey:String(env.RC_ROLL_CALL_EVENTS_READ_KEY||'').trim(),
+      workspaceBindings:parseWorkspaceBindings(env.RC_EVENTS_WORKSPACE_BINDINGS_JSON)
     },
     omni: {
       serviceKeyHash: String(env.RC_OMNI_GATEWAY_SERVICE_KEY_SHA256 || '').trim(),
@@ -174,6 +193,46 @@ async function forwardPlatformAccess({config,fetchImpl,correlation,path,payload}
     body:JSON.stringify(payload||{})
   });
   return {ok:result.response.ok,status:result.response.status,body:result.body||{error:'platform_access_empty_response'}};
+}
+
+async function readCanonicalEventReference({config,fetchImpl,correlation,eventKey,payload}){
+  if(!config.eventsOwner.baseUrl.startsWith('https://')||!config.eventsOwner.serviceKey){
+    return {ok:false,status:503,body:{error:'events_owner_reference_not_ready'}};
+  }
+  const organizationId=String(payload?.organization_id||'').trim();
+  const workspaceId=String(payload?.workspace_id||'').trim();
+  const identityToken=String(payload?.identity_token||'').trim();
+  if(!organizationId||!workspaceId||!identityToken)return {ok:false,status:400,body:{error:'event_reference_context_required'}};
+  const binding=workspaceBinding(config.eventsOwner.workspaceBindings,organizationId,workspaceId);
+  if(!binding)return {ok:false,status:409,body:{error:'events_workspace_binding_missing',organization_id:organizationId,workspace_id:workspaceId}};
+  const access=await forwardPlatformAccess({
+    config,fetchImpl,correlation,path:'/v1/access/decisions',
+    payload:{identity_token:identityToken,organization_id:organizationId,workspace_id:workspaceId,resource:'events',action:'read'}
+  });
+  if(!access.ok||access.body?.decision!=='allow')return {ok:false,status:access.status===401?401:403,body:{error:'event_reference_access_denied',reason:access.body?.reason||access.body?.error||'access_denied'}};
+  const owner=await fetchJson(fetchImpl,config.eventsOwner.baseUrl+'/api/platform/events/'+encodeURIComponent(eventKey)+'/reference',{
+    headers:{
+      accept:'application/json',
+      'x-platform-service-key':config.eventsOwner.serviceKey,
+      'x-roll-call-organization-id':organizationId,
+      'x-roll-call-workspace-id':workspaceId,
+      'x-roll-call-events-tenant-id':binding.tenant_id,
+      'x-roll-call-events-workspace-id':binding.workspace_id,
+      'x-roll-call-subject-id':String(access.body?.subject_id||''),
+      'x-roll-call-access-receipt-id':String(access.body?.receipt_id||''),
+      'x-roll-call-request-id':correlation['x-roll-call-request-id'],
+      'x-roll-call-trace-id':correlation['x-roll-call-trace-id'],
+      'x-roll-call-correlation-id':correlation['x-roll-call-correlation-id']
+    }
+  });
+  if(!owner.response.ok||owner.body?.ok!==true)return {ok:false,status:owner.response.status||502,body:owner.body||{error:'events_owner_reference_failed'}};
+  if(owner.body?.contract!=='roll-call.event-reference.v1'||owner.body?.event_reference?.event_id==null)return {ok:false,status:502,body:{error:'events_owner_reference_contract_mismatch'}};
+  return {ok:true,status:200,body:{
+    ok:true,
+    contract:'roll-call.event-reference.v1',
+    event_reference:owner.body.event_reference,
+    authorization:{decision:'allow',receipt_id:access.body.receipt_id,subject_id:access.body.subject_id}
+  }};
 }
 
 
@@ -298,6 +357,14 @@ export function createServer(config = loadConfig(), deps={}) {
       }
       if (req.method === 'POST' && url.pathname === '/v1/identity/assertions') {
         return send(res, 501, {error:'identity_assertion_issuance_not_available',reason:'BSV Identity is the authoritative issuer; Gateway issuance remains disabled.'}, correlation);
+      }
+
+
+      const eventReferenceMatch=url.pathname.match(/^\/v1\/events\/([^/]+)\/reference$/);
+      if(req.method==='POST'&&eventReferenceMatch){
+        const payload=await readJson(req);
+        const result=await readCanonicalEventReference({config,fetchImpl,correlation,eventKey:decodeURIComponent(eventReferenceMatch[1]),payload});
+        return send(res,result.status,result.body,correlation);
       }
 
       if(req.method==='POST'&&['/v1/core/context','/v1/entitlements/resolve','/v1/access/decisions'].includes(url.pathname)){
