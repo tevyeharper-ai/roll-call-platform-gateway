@@ -19,6 +19,7 @@ const config = loadConfig({
   RC_OMNI_GATEWAY_SERVICE_KEY_SHA256:hash(omniKey),
   RC_PLATFORM_ACCESS_URL:'https://access.test',RC_PLATFORM_ACCESS_GATEWAY_KEY:accessKey,
   RC_ROLL_CALL_EVENTS_READ_URL:'https://events.test',RC_ROLL_CALL_EVENTS_READ_KEY:ownerKey,
+  RC_ROLL_CALL_BROADCAST_URL:'https://broadcast.test',RC_ROLL_CALL_BROADCAST_SERVICE_KEY:'broadcast-owner-key',
   RC_EVENTS_WORKSPACE_BINDINGS_JSON:JSON.stringify({'roll-call:workspace-1':{tenant_id:tenantId,workspace_id:workspaceId}}),
   RC_OMNI_ROLL_CALL_ORGANIZATION_ID:'roll-call-events',RC_OMNI_ROLL_CALL_TENANT_ID:tenantId,RC_OMNI_ROLL_CALL_WORKSPACE_ID:workspaceId,
   RC_ACCESS_RECEIPT_MAX_AGE_SECONDS:'120'
@@ -50,7 +51,8 @@ const fetchImpl=async(url,options={})=>{
     accessCalls.push({path:'/v1/access/decisions',options});
     assert.equal(options.headers['x-platform-service-key'],accessKey);
     const payload=JSON.parse(options.body);
-    return new Response(JSON.stringify({decision:'allow',reason:'explicit_workspace_membership',receipt_id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',subject_id:'subject-1',organization_id:payload.organization_id,workspace_id:payload.workspace_id,resource:payload.resource,action:payload.action,policy_version:'P3.4.0'}),{status:200,headers:{'content-type':'application/json'}});
+    const receiptIdForResource=payload.resource==='broadcast'?'cccccccc-cccc-4ccc-8ccc-cccccccccccc':'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    return new Response(JSON.stringify({decision:'allow',reason:'explicit_workspace_membership',receipt_id:receiptIdForResource,subject_id:'subject-1',organization_id:payload.organization_id,workspace_id:payload.workspace_id,resource:payload.resource,action:payload.action,policy_version:'P3.4.0'}),{status:200,headers:{'content-type':'application/json'}});
   }
   if(target==='https://events.test/api/platform/events/event-123/reference'){
     assert.equal(options.headers['x-platform-service-key'],ownerKey);
@@ -69,6 +71,29 @@ const fetchImpl=async(url,options={})=>{
         source:{authority:'events.clean-host-source-of-truth.v1',application_id:'roll-call.events',updated_at:'2026-09-21T00:00:00.000Z'}
       }
     }),{status:200,headers:{'content-type':'application/json'}});
+  }
+  if(target==='https://broadcast.test/api/platform/events/event-123/campaign-intents'){
+    assert.equal(options.method,'POST');
+    assert.equal(options.headers['x-platform-service-key'],'broadcast-owner-key');
+    assert.equal(options.headers['x-roll-call-subject-id'],'subject-1');
+    assert.equal(options.headers['x-roll-call-events-access-receipt-id'],'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
+    assert.equal(options.headers['x-roll-call-broadcast-access-receipt-id'],'cccccccc-cccc-4ccc-8ccc-cccccccccccc');
+    const payload=JSON.parse(options.body);
+    assert.equal(payload.organization_id,'roll-call');
+    assert.equal(payload.workspace_id,'workspace-1');
+    assert.equal(payload.intent.schema,'roll-call.event-promote-broadcast.v1');
+    assert.equal(payload.intent.requested_by,'subject-1');
+    assert.equal(payload.event_reference.event_id,'event-123');
+    return new Response(JSON.stringify({
+      ok:true,
+      contract:'roll-call.event-promote-broadcast.result.v1',
+      authority:'roll-call.broadcast',
+      result:{
+        created:true,idempotent:false,intent_id:'intent-1',campaign_id:'campaign-1',campaign_name:'Launch Event Campaign',
+        status:'draft',event_id:'event-123',event_authority:'events.clean-host-source-of-truth.v1',
+        broadcast_authority:'roll-call.broadcast',canonical_path:'/app/broadcast/campaigns/campaign-1',legacy_path:'/campaigns/campaign-1'
+      }
+    }),{status:201,headers:{'content-type':'application/json'}});
   }
   if(target==='https://events.test/api/platform/omni/work'){
     assert.equal(options.headers['x-platform-service-key'],ownerKey);
@@ -120,6 +145,44 @@ test('Event reference fails closed when shared workspace has no Events binding',
   const {r,b}=await post('/v1/events/event-123/reference',{identity_token:'token',organization_id:'roll-call',workspace_id:'unbound'});
   assert.equal(r.status,409);
   assert.equal(b.error,'events_workspace_binding_missing');
+});
+test('Event promote creates Broadcast-owned Campaign with two authorization receipts',async()=>{
+  const {r,b}=await post('/v1/events/event-123/broadcast-campaign-intents',{
+    identity_token:'token',
+    organization_id:'roll-call',
+    intent:{
+      schema:'roll-call.event-promote-broadcast.v1',
+      event_id:'event-123',
+      workspace_id:'workspace-1',
+      requested_by:'subject-1',
+      source:{publication_version_id:null,use_draft_if_authorized:false},
+      prefill:{objective:'Drive registrations',campaign_name:'Launch Event Campaign'},
+      idempotency_key:'promote-event-123-001'
+    }
+  });
+  assert.equal(r.status,201);
+  assert.equal(b.contract,'roll-call.event-promote-broadcast.result.v1');
+  assert.equal(b.result.broadcast_authority,'roll-call.broadcast');
+  assert.equal(b.result.event_authority,'events.clean-host-source-of-truth.v1');
+  assert.equal(b.result.campaign_id,'campaign-1');
+  assert.equal(b.authorization.events_read_receipt_id,'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
+  assert.equal(b.authorization.broadcast_write_receipt_id,'cccccccc-cccc-4ccc-8ccc-cccccccccccc');
+});
+test('Event promote rejects requested_by mismatch',async()=>{
+  const {r,b}=await post('/v1/events/event-123/broadcast-campaign-intents',{
+    identity_token:'token',organization_id:'roll-call',
+    intent:{schema:'roll-call.event-promote-broadcast.v1',event_id:'event-123',workspace_id:'workspace-1',requested_by:'other-subject',source:{use_draft_if_authorized:false},idempotency_key:'mismatch-001'}
+  });
+  assert.equal(r.status,403);
+  assert.equal(b.error,'promotion_requested_by_subject_mismatch');
+});
+test('Event promote rejects draft promotion until governed draft contract exists',async()=>{
+  const {r,b}=await post('/v1/events/event-123/broadcast-campaign-intents',{
+    identity_token:'token',organization_id:'roll-call',
+    intent:{schema:'roll-call.event-promote-broadcast.v1',event_id:'event-123',workspace_id:'workspace-1',requested_by:'subject-1',source:{use_draft_if_authorized:true},idempotency_key:'draft-001'}
+  });
+  assert.equal(r.status,422);
+  assert.equal(b.error,'draft_event_promotion_not_supported_in_p3_4');
 });
 test('Gateway forwards workspace-scoped access decision',async()=>{const {r,b}=await post('/v1/access/decisions',{identity_token:'token',organization_id:'roll-call',workspace_id:'workspace-1',resource:'broadcast',action:'write'});assert.equal(r.status,200);assert.equal(b.decision,'allow');assert.equal(b.resource,'broadcast');assert.equal(b.workspace_id,'workspace-1');});
 
