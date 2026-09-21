@@ -1,12 +1,12 @@
-name: Gateway P3.4 CI
+name: Gateway P3.5 CI
 
 on:
   push:
     branches:
-      - development/p3.4-roll-call-core-broadcast
+      - development/p3.5-roll-call-shared-session
   pull_request:
     branches:
-      - feature/p3.2-identity-reference-contracts
+      - development/p3.4-roll-call-core-broadcast
 
 permissions:
   contents: read
@@ -24,4 +24,4 @@ jobs:
       - name: Contract tests
         run: npm test
       - name: Docker build
-        run: docker build -t roll-call-platform-gateway:p3.4 .
+        run: docker build -t roll-call-platform-gateway:p3.5 .
