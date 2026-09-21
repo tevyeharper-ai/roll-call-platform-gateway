@@ -44,9 +44,21 @@ The browser/client never receives the Platform Access service key.
 
 Callers cannot supply Events-local tenant/workspace IDs directly.
 
+## Event → Promote → Roll Call Broadcast
+`POST /v1/events/{event_id}/broadcast-campaign-intents` is the governed cross-toolkit command.
+
+Gateway execution order:
+1. resolve the `roll-call.broadcast` toolkit entitlement;
+2. authorize `broadcast.write`;
+3. authorize `events.read` and retrieve the canonical `roll-call.event-reference.v1` projection;
+4. verify the authenticated subject matches the requested actor;
+5. call the private Roll Call Broadcast owner endpoint with both access receipts;
+6. return the Broadcast-owned Campaign result.
+
+Draft Event promotion remains fail-closed until a governed draft-content contract is implemented.
+
 ## Next P3.4 work
 - same-origin application path routing for `/app/events/*` and `/app/broadcast/*`
-- Event → Promote → Broadcast intent mediation
 - shared Shell session binding
 - Staging integration certification
 
