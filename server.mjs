@@ -2,9 +2,9 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import { URL } from 'node:url';
 
-const VERSION = 'P3.3.0';
+const VERSION = 'P3.4.0';
 const SERVICE = 'roll-call-platform-gateway';
-const DEFAULT_CONSUMERS = ['events', 'field', 'experiential', 'asmbly'];
+const DEFAULT_CONSUMERS = ['events', 'broadcast', 'field', 'experiential', 'asmbly'];
 const CORRELATION_HEADERS = [
   'x-roll-call-context-id',
   'x-roll-call-request-id',
@@ -36,9 +36,23 @@ function requiredIdentityClaims(payload) {
 }
 function cleanUrl(value=''){ return String(value||'').trim().replace(/\/$/,''); }
 function uuid(value){ return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value||'')); }
+function parseWorkspaceBindings(raw=''){
+  if(!String(raw||'').trim())return {};
+  try{
+    const value=JSON.parse(raw);
+    if(!value||typeof value!=='object'||Array.isArray(value))return {};
+    return value;
+  }catch{return {};}
+}
+function workspaceBinding(bindings,organizationId,workspaceId){
+  const value=bindings?.[organizationId+':'+workspaceId]||bindings?.[workspaceId]||null;
+  if(!value||typeof value!=='object')return null;
+  const tenantId=String(value.tenant_id||'').trim(),eventsWorkspaceId=String(value.workspace_id||'').trim();
+  return tenantId&&eventsWorkspaceId?{tenant_id:tenantId,workspace_id:eventsWorkspaceId}:null;
+}
 
 export function loadConfig(env = process.env) {
-  const serviceId = env.RC_GATEWAY_SERVICE_ID || 'roll-call-platform-gateway:p3.3-staging';
+  const serviceId = env.RC_GATEWAY_SERVICE_ID || 'roll-call-platform-gateway:p3.4-staging';
   const environment = env.RC_GATEWAY_ENV || env.NODE_ENV || 'development';
   const publicKeyPem = env.RC_GATEWAY_PUBLIC_KEY_PEM || '';
   const privateKeyPem = env.RC_GATEWAY_PRIVATE_KEY_PEM || '';
@@ -52,6 +66,19 @@ export function loadConfig(env = process.env) {
     keyId: nonempty(publicKeyPem) ? keyId(publicKeyPem) : null,
     consumers,
     wordpressOrigin: env.RC_WORDPRESS_ORIGIN || null,
+    platformAccess: {
+      url: cleanUrl(env.RC_PLATFORM_ACCESS_URL),
+      serviceKey: String(env.RC_PLATFORM_ACCESS_GATEWAY_KEY || '').trim()
+    },
+    eventsOwner:{
+      baseUrl:cleanUrl(env.RC_ROLL_CALL_EVENTS_READ_URL),
+      serviceKey:String(env.RC_ROLL_CALL_EVENTS_READ_KEY||'').trim(),
+      workspaceBindings:parseWorkspaceBindings(env.RC_EVENTS_WORKSPACE_BINDINGS_JSON)
+    },
+    broadcastOwner:{
+      baseUrl:cleanUrl(env.RC_ROLL_CALL_BROADCAST_URL),
+      serviceKey:String(env.RC_ROLL_CALL_BROADCAST_SERVICE_KEY||'').trim()
+    },
     omni: {
       serviceKeyHash: String(env.RC_OMNI_GATEWAY_SERVICE_KEY_SHA256 || '').trim(),
       accessUrl: cleanUrl(env.RC_PLATFORM_ACCESS_URL),
@@ -64,6 +91,13 @@ export function loadConfig(env = process.env) {
       maxReceiptAgeSeconds: Number(env.RC_ACCESS_RECEIPT_MAX_AGE_SECONDS || 120)
     }
   };
+}
+
+export function platformAccessFailures(config){
+  const f=[];
+  if(!config.platformAccess.url.startsWith('https://'))f.push('platform_access_url_invalid');
+  if(!config.platformAccess.serviceKey)f.push('platform_access_gateway_key_missing');
+  return f;
 }
 
 export function omniReadFailures(config){
@@ -146,6 +180,150 @@ async function fetchJson(fetchImpl,url,options={}){
   return {response,body};
 }
 
+async function forwardPlatformAccess({config,fetchImpl,correlation,path,payload}){
+  const failures=platformAccessFailures(config);
+  if(failures.length)return {ok:false,status:503,body:{error:'platform_access_not_ready',failures}};
+  const result=await fetchJson(fetchImpl,config.platformAccess.url+path,{
+    method:'POST',
+    headers:{
+      'content-type':'application/json',
+      'accept':'application/json',
+      'x-platform-service-key':config.platformAccess.serviceKey,
+      'x-roll-call-request-id':correlation['x-roll-call-request-id'],
+      'x-roll-call-trace-id':correlation['x-roll-call-trace-id'],
+      'x-roll-call-correlation-id':correlation['x-roll-call-correlation-id'],
+      'x-roll-call-context-id':correlation['x-roll-call-context-id']||''
+    },
+    body:JSON.stringify(payload||{})
+  });
+  return {ok:result.response.ok,status:result.response.status,body:result.body||{error:'platform_access_empty_response'}};
+}
+
+async function readCanonicalEventReference({config,fetchImpl,correlation,eventKey,payload}){
+  if(!config.eventsOwner.baseUrl.startsWith('https://')||!config.eventsOwner.serviceKey){
+    return {ok:false,status:503,body:{error:'events_owner_reference_not_ready'}};
+  }
+  const organizationId=String(payload?.organization_id||'').trim();
+  const workspaceId=String(payload?.workspace_id||'').trim();
+  const identityToken=String(payload?.identity_token||'').trim();
+  if(!organizationId||!workspaceId||!identityToken)return {ok:false,status:400,body:{error:'event_reference_context_required'}};
+  const binding=workspaceBinding(config.eventsOwner.workspaceBindings,organizationId,workspaceId);
+  if(!binding)return {ok:false,status:409,body:{error:'events_workspace_binding_missing',organization_id:organizationId,workspace_id:workspaceId}};
+  const access=await forwardPlatformAccess({
+    config,fetchImpl,correlation,path:'/v1/access/decisions',
+    payload:{identity_token:identityToken,organization_id:organizationId,workspace_id:workspaceId,resource:'events',action:'read'}
+  });
+  if(!access.ok||access.body?.decision!=='allow')return {ok:false,status:access.status===401?401:403,body:{error:'event_reference_access_denied',reason:access.body?.reason||access.body?.error||'access_denied'}};
+  const owner=await fetchJson(fetchImpl,config.eventsOwner.baseUrl+'/api/platform/events/'+encodeURIComponent(eventKey)+'/reference',{
+    headers:{
+      accept:'application/json',
+      'x-platform-service-key':config.eventsOwner.serviceKey,
+      'x-roll-call-organization-id':organizationId,
+      'x-roll-call-workspace-id':workspaceId,
+      'x-roll-call-events-tenant-id':binding.tenant_id,
+      'x-roll-call-events-workspace-id':binding.workspace_id,
+      'x-roll-call-subject-id':String(access.body?.subject_id||''),
+      'x-roll-call-access-receipt-id':String(access.body?.receipt_id||''),
+      'x-roll-call-request-id':correlation['x-roll-call-request-id'],
+      'x-roll-call-trace-id':correlation['x-roll-call-trace-id'],
+      'x-roll-call-correlation-id':correlation['x-roll-call-correlation-id']
+    }
+  });
+  if(!owner.response.ok||owner.body?.ok!==true)return {ok:false,status:owner.response.status||502,body:owner.body||{error:'events_owner_reference_failed'}};
+  if(owner.body?.contract!=='roll-call.event-reference.v1'||owner.body?.event_reference?.event_id==null)return {ok:false,status:502,body:{error:'events_owner_reference_contract_mismatch'}};
+  return {ok:true,status:200,body:{
+    ok:true,
+    contract:'roll-call.event-reference.v1',
+    event_reference:owner.body.event_reference,
+    authorization:{decision:'allow',receipt_id:access.body.receipt_id,subject_id:access.body.subject_id}
+  }};
+}
+
+
+
+async function createBroadcastCampaignFromEvent({config,fetchImpl,correlation,eventKey,payload}){
+  if(!config.broadcastOwner.baseUrl.startsWith('https://')||!config.broadcastOwner.serviceKey){
+    return {ok:false,status:503,body:{error:'broadcast_owner_not_ready'}};
+  }
+  const identityToken=String(payload?.identity_token||'').trim();
+  const organizationId=String(payload?.organization_id||'').trim();
+  const intent=payload?.intent||payload?.promotion_intent||{};
+  const workspaceId=String(intent?.workspace_id||payload?.workspace_id||'').trim();
+  if(!identityToken||!organizationId||!workspaceId)return {ok:false,status:400,body:{error:'broadcast_campaign_intent_context_required'}};
+  if(intent?.schema!=='roll-call.event-promote-broadcast.v1')return {ok:false,status:400,body:{error:'broadcast_campaign_intent_schema_invalid'}};
+  if(String(intent?.event_id||'')!==String(eventKey))return {ok:false,status:400,body:{error:'broadcast_campaign_intent_event_mismatch'}};
+  if(intent?.source?.use_draft_if_authorized===true)return {ok:false,status:422,body:{error:'draft_event_promotion_not_supported_in_p3_4'}};
+
+  const entitlement=await forwardPlatformAccess({
+    config,fetchImpl,correlation,path:'/v1/entitlements/resolve',
+    payload:{identity_token:identityToken,organization_id:organizationId,workspace_id:workspaceId,toolkit_id:'roll-call.broadcast'}
+  });
+  if(!entitlement.ok)return {ok:false,status:entitlement.status,body:{error:'broadcast_entitlement_resolution_failed',detail:entitlement.body}};
+  if(entitlement.body?.entitled!==true)return {ok:false,status:403,body:{error:'broadcast_entitlement_required',reason:entitlement.body?.reason||'not_entitled'}};
+
+  const broadcastAccess=await forwardPlatformAccess({
+    config,fetchImpl,correlation,path:'/v1/access/decisions',
+    payload:{identity_token:identityToken,organization_id:organizationId,workspace_id:workspaceId,resource:'broadcast',action:'write'}
+  });
+  if(!broadcastAccess.ok||broadcastAccess.body?.decision!=='allow'){
+    return {ok:false,status:broadcastAccess.status===401?401:403,body:{error:'broadcast_write_access_denied',reason:broadcastAccess.body?.reason||broadcastAccess.body?.error||'access_denied'}};
+  }
+
+  const eventReference=await readCanonicalEventReference({
+    config,fetchImpl,correlation,eventKey,
+    payload:{identity_token:identityToken,organization_id:organizationId,workspace_id:workspaceId}
+  });
+  if(!eventReference.ok)return eventReference;
+
+  const subjectId=String(broadcastAccess.body?.subject_id||eventReference.body?.authorization?.subject_id||'').trim();
+  if(!subjectId)return {ok:false,status:502,body:{error:'platform_subject_missing_after_authorization'}};
+  if(intent?.requested_by&&String(intent.requested_by)!==subjectId)return {ok:false,status:403,body:{error:'promotion_requested_by_subject_mismatch'}};
+
+  const canonicalIntent={...intent,requested_by:subjectId,workspace_id:workspaceId,event_id:String(eventKey)};
+  const owner=await fetchJson(fetchImpl,config.broadcastOwner.baseUrl+'/api/platform/events/'+encodeURIComponent(eventKey)+'/campaign-intents',{
+    method:'POST',
+    headers:{
+      'content-type':'application/json',
+      accept:'application/json',
+      'x-platform-service-key':config.broadcastOwner.serviceKey,
+      'x-roll-call-subject-id':subjectId,
+      'x-roll-call-events-access-receipt-id':String(eventReference.body?.authorization?.receipt_id||''),
+      'x-roll-call-broadcast-access-receipt-id':String(broadcastAccess.body?.receipt_id||''),
+      'x-roll-call-request-id':correlation['x-roll-call-request-id'],
+      'x-roll-call-trace-id':correlation['x-roll-call-trace-id'],
+      'x-roll-call-correlation-id':correlation['x-roll-call-correlation-id']
+    },
+    body:JSON.stringify({
+      organization_id:organizationId,
+      workspace_id:workspaceId,
+      subject_id:subjectId,
+      event_read_access_receipt_id:eventReference.body?.authorization?.receipt_id||null,
+      broadcast_write_access_receipt_id:broadcastAccess.body?.receipt_id||null,
+      intent:canonicalIntent,
+      event_reference:eventReference.body?.event_reference
+    })
+  });
+  if(!owner.response.ok||owner.body?.ok!==true){
+    return {ok:false,status:owner.response.status||502,body:owner.body||{error:'broadcast_owner_campaign_intent_failed'}};
+  }
+  return {
+    ok:true,
+    status:owner.response.status||201,
+    body:{
+      ok:true,
+      contract:'roll-call.event-promote-broadcast.result.v1',
+      result:owner.body.result,
+      authorization:{
+        subject_id:subjectId,
+        events_read_receipt_id:eventReference.body?.authorization?.receipt_id||null,
+        broadcast_write_receipt_id:broadcastAccess.body?.receipt_id||null,
+        broadcast_entitlement:entitlement.body
+      }
+    }
+  };
+}
+
+
 export function validateAccessReceipt(receipt,{organizationId,resource,action='read',maxAgeSeconds=120,now=Date.now()}){
   if(!receipt)return {ok:false,error:'access_receipt_missing'};
   if(receipt.decision!=='allow')return {ok:false,error:'access_receipt_not_allowed'};
@@ -205,7 +383,8 @@ export function createServer(config = loadConfig(), deps={}) {
         return send(res, 200, {
           status:'ok', service:SERVICE, service_id:config.serviceId, version:VERSION,
           environment:config.environment, reference_consumers:config.consumers, signing,
-          omni_read_broker:{available:omniReadFailures(config).length===0,readiness_endpoint:'/v1/omni/readiness'}
+          omni_read_broker:{available:omniReadFailures(config).length===0,readiness_endpoint:'/v1/omni/readiness'},
+          roll_call_core:{available:platformAccessFailures(config).length===0,context_endpoint:'/v1/core/context',entitlement_endpoint:'/v1/entitlements/resolve',access_decision_endpoint:'/v1/access/decisions'}
         }, correlation);
       }
       if (req.method === 'GET' && url.pathname === '/ready') {
@@ -217,7 +396,8 @@ export function createServer(config = loadConfig(), deps={}) {
           status:'not_ready', service_id:config.serviceId, version:VERSION, reason:failures.join(','), consumers:config.consumers
         } : {
           status:'ready', service_id:config.serviceId, version:VERSION, environment:config.environment, consumers:config.consumers,
-          omni_read_ready:omniReadFailures(config).length===0
+          omni_read_ready:omniReadFailures(config).length===0,
+          roll_call_core_ready:platformAccessFailures(config).length===0
         }, correlation);
       }
       if(req.method==='GET'&&url.pathname==='/v1/omni/readiness'){
@@ -230,12 +410,12 @@ export function createServer(config = loadConfig(), deps={}) {
         },correlation);
       }
 
-      const ref = url.pathname.match(/^\/v1\/(events|field|experiential|asmbly)\/reference$/);
+      const ref = url.pathname.match(/^\/v1\/(events|broadcast|field|experiential|asmbly)\/reference$/);
       if (req.method === 'GET' && ref) {
         const consumer = ref[1];
         if (!config.consumers.includes(consumer)) return send(res, 404, { error:'unsupported_consumer', consumer }, correlation);
         return send(res, 200, {
-          status:'ok', consumer, contract_version:'P3.2', gateway_service_id:config.serviceId,
+          status:'ok', consumer, contract_version:'P3.4', gateway_service_id:config.serviceId,
           environment:config.environment,
           context_id:correlation['x-roll-call-context-id'] || null,
           request_id:correlation['x-roll-call-request-id'],
@@ -264,6 +444,28 @@ export function createServer(config = loadConfig(), deps={}) {
       }
       if (req.method === 'POST' && url.pathname === '/v1/identity/assertions') {
         return send(res, 501, {error:'identity_assertion_issuance_not_available',reason:'BSV Identity is the authoritative issuer; Gateway issuance remains disabled.'}, correlation);
+      }
+
+
+
+      const broadcastIntentMatch=url.pathname.match(/^\/v1\/events\/([^/]+)\/broadcast-campaign-intents$/);
+      if(req.method==='POST'&&broadcastIntentMatch){
+        const payload=await readJson(req);
+        const result=await createBroadcastCampaignFromEvent({config,fetchImpl,correlation,eventKey:decodeURIComponent(broadcastIntentMatch[1]),payload});
+        return send(res,result.status,result.body,correlation);
+      }
+
+      const eventReferenceMatch=url.pathname.match(/^\/v1\/events\/([^/]+)\/reference$/);
+      if(req.method==='POST'&&eventReferenceMatch){
+        const payload=await readJson(req);
+        const result=await readCanonicalEventReference({config,fetchImpl,correlation,eventKey:decodeURIComponent(eventReferenceMatch[1]),payload});
+        return send(res,result.status,result.body,correlation);
+      }
+
+      if(req.method==='POST'&&['/v1/core/context','/v1/entitlements/resolve','/v1/access/decisions'].includes(url.pathname)){
+        const payload=await readJson(req);
+        const result=await forwardPlatformAccess({config,fetchImpl,correlation,path:url.pathname,payload});
+        return send(res,result.status,result.body,correlation);
       }
 
       const readMatch=url.pathname.match(/^\/v1\/omni\/(work|calendar)\/read$/);
@@ -301,7 +503,8 @@ export function start(env = process.env) {
       event:'gateway_started', service:SERVICE, service_id:config.serviceId, version:VERSION,
       environment:config.environment, port:config.port, reference_consumers:config.consumers,
       identity_verification:Boolean(config.publicKeyPem), identity_issuance:false,
-      omni_read_ready:omniReadFailures(config).length===0,timestamp:nowIso()
+      omni_read_ready:omniReadFailures(config).length===0,
+      roll_call_core_ready:platformAccessFailures(config).length===0,timestamp:nowIso()
     }));
   });
   return server;
