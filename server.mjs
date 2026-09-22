@@ -20,6 +20,12 @@ function parseConsumers(raw = '') {
   const values = String(raw || '').split(',').map(v => v.trim().toLowerCase()).filter(Boolean);
   return [...new Set(values.length ? values : DEFAULT_CONSUMERS)];
 }
+function parseBrowserPublicOrigins(primary='',raw=''){
+  const values=[primary,...String(raw||'').split(',')]
+    .map(value=>cleanUrl(value))
+    .filter(value=>value.startsWith('https://'));
+  return [...new Set(values)];
+}
 function decodeBase64urlJson(input) { return JSON.parse(Buffer.from(input, 'base64url').toString('utf8')); }
 function keyId(publicKeyPem) { return crypto.createHash('sha256').update(publicKeyPem).digest('hex').slice(0, 24); }
 function exportPublicJwk(publicKeyPem) {
@@ -70,6 +76,7 @@ export function loadConfig(env = process.env) {
     keyId: nonempty(publicKeyPem) ? keyId(publicKeyPem) : null,
     consumers,
     browserAuth:loadBrowserAuthConfig(env),
+    browserPublicOrigins:parseBrowserPublicOrigins(env.RC_PUBLIC_URL,env.RC_BROWSER_PUBLIC_ORIGINS),
     wordpressOrigin: env.RC_WORDPRESS_ORIGIN || null,
     platformAccess: {
       url: cleanUrl(env.RC_PLATFORM_ACCESS_URL),
@@ -105,6 +112,15 @@ export function loadConfig(env = process.env) {
       maxReceiptAgeSeconds: Number(env.RC_ACCESS_RECEIPT_MAX_AGE_SECONDS || 120)
     }
   };
+}
+
+export function browserAuthConfigForRequest(config,req){
+  const forwardedHost=String(req?.headers?.['x-forwarded-host']||'').split(',')[0].trim().toLowerCase();
+  const forwardedProto=String(req?.headers?.['x-forwarded-proto']||'https').split(',')[0].trim().toLowerCase();
+  if(forwardedProto!=='https'||!forwardedHost)return config.browserAuth;
+  const origin='https://'+forwardedHost;
+  if(!config.browserPublicOrigins?.includes(origin))return config.browserAuth;
+  return {...config.browserAuth,publicUrl:origin,callbackUrl:origin+'/auth/callback'};
 }
 
 export function platformAccessFailures(config){
@@ -820,10 +836,11 @@ export function createServer(config = loadConfig(), deps={}) {
 
 
       if(req.method==='GET'&&url.pathname==='/api/auth/login'){
-        const failures=browserAuthFailures(config.browserAuth);
+        const browserAuth=browserAuthConfigForRequest(config,req);
+        const failures=browserAuthFailures(browserAuth);
         if(failures.length)return send(res,503,{error:'roll_call_browser_auth_not_ready',failures},correlation);
         try{
-          const begin=await beginBrowserLogin(config.browserAuth,{returnTo:safeReturnTo(url.searchParams.get('returnTo'))},fetchImpl);
+          const begin=await beginBrowserLogin(browserAuth,{returnTo:safeReturnTo(url.searchParams.get('returnTo'))},fetchImpl);
           return redirect(res,begin.authorizationUrl,{cookies:begin.cookies});
         }catch(error){
           return send(res,503,{error:'oidc_login_unavailable',detail:String(error?.message||error)},correlation);
@@ -831,23 +848,24 @@ export function createServer(config = loadConfig(), deps={}) {
       }
 
       if(req.method==='GET'&&url.pathname==='/auth/callback'){
-        const failures=browserAuthFailures(config.browserAuth);
+        const browserAuth=browserAuthConfigForRequest(config,req);
+        const failures=browserAuthFailures(browserAuth);
         if(failures.length)return send(res,503,{error:'roll_call_browser_auth_not_ready',failures},correlation);
-        const credentials=readBrowserCredentials(req.headers.cookie||'',config.browserAuth);
+        const credentials=readBrowserCredentials(req.headers.cookie||'',browserAuth);
         try{
-          const completed=await completeBrowserLogin(config.browserAuth,{
+          const completed=await completeBrowserLogin(browserAuth,{
             code:url.searchParams.get('code'),
             state:url.searchParams.get('state'),
             expectedState:credentials.state,
             verifier:credentials.verifier,
             nonce:credentials.nonce
           },fetchImpl);
-          return redirect(res,new URL(safeReturnTo(credentials.returnTo||'/app'),config.browserAuth.publicUrl).toString(),{cookies:completed.cookies});
+          return redirect(res,new URL(safeReturnTo(credentials.returnTo||'/app'),browserAuth.publicUrl).toString(),{cookies:completed.cookies});
         }catch(error){
           const reason=String(error?.message||'identity_callback_failed');
           const recoveredReturnTo=safeReturnTo(
             credentials.returnTo
-            || recoverBrowserReturnTo(url.searchParams.get('state'),config.browserAuth)
+            || recoverBrowserReturnTo(url.searchParams.get('state'),browserAuth)
             || '/app'
           );
 
