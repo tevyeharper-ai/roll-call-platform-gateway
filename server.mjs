@@ -2,9 +2,9 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import { URL } from 'node:url';
 import { Readable } from 'node:stream';
-import {beginBrowserLogin,browserAuthFailures,completeBrowserLogin,loadBrowserAuthConfig,logoutCookies,readBrowserCredentials,safeReturnTo} from './browser-session.mjs';
+import {beginBrowserLogin,browserAuthFailures,completeBrowserLogin,loadBrowserAuthConfig,loginRecoveryCookies,logoutCookies,readBrowserCredentials,recoverBrowserReturnTo,safeReturnTo} from './browser-session.mjs';
 
-const VERSION = 'P3.7.0';
+const VERSION = 'P3.7.1';
 const SERVICE = 'roll-call-platform-gateway';
 const DEFAULT_CONSUMERS = ['events', 'broadcast', 'field', 'experiential', 'asmbly'];
 const CORRELATION_HEADERS = [
@@ -736,6 +736,11 @@ export function createServer(config = loadConfig(), deps={}) {
     const correlation = requestCorrelation(req);
     try {
       const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+      if(req.method==='GET'&&url.pathname==='/'&&url.searchParams.get('identityError')){
+        const returnTo=safeReturnTo(url.searchParams.get('returnTo')||'/app/field');
+        return redirect(res,'/api/auth/login?returnTo='+encodeURIComponent(returnTo));
+      }
+
       if (req.method === 'GET' && url.pathname === '/health') {
         return send(res, 200, { status:'ok', service:SERVICE, service_id:config.serviceId, version:VERSION, environment:config.environment, timestamp:nowIso() }, correlation);
       }
@@ -826,8 +831,36 @@ export function createServer(config = loadConfig(), deps={}) {
           },fetchImpl);
           return redirect(res,new URL(safeReturnTo(credentials.returnTo||'/app'),config.browserAuth.publicUrl).toString(),{cookies:completed.cookies});
         }catch(error){
-          return redirect(res,new URL('/?identityError='+encodeURIComponent(String(error?.message||'identity_callback_failed')),config.browserAuth.publicUrl).toString(),{cookies:logoutCookies()});
+          const reason=String(error?.message||'identity_callback_failed');
+          const recoveredReturnTo=safeReturnTo(
+            credentials.returnTo
+            || recoverBrowserReturnTo(url.searchParams.get('state'),config.browserAuth)
+            || '/app'
+          );
+
+          if(reason==='identity_state_invalid'&&!credentials.recovery){
+            return redirect(
+              res,
+              '/api/auth/login?returnTo='+encodeURIComponent(recoveredReturnTo),
+              {cookies:loginRecoveryCookies()}
+            );
+          }
+
+          return redirect(
+            res,
+            '/auth/error?reason='+encodeURIComponent(reason)+'&returnTo='+encodeURIComponent(recoveredReturnTo),
+            {cookies:logoutCookies()}
+          );
         }
+      }
+
+      if(req.method==='GET'&&url.pathname==='/auth/error'){
+        const reason=String(url.searchParams.get('reason')||'identity_callback_failed');
+        const returnTo=safeReturnTo(url.searchParams.get('returnTo')||'/app');
+        const body='<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Roll Call sign-in</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#090a0d;color:#f6f7fb;font-family:Inter,system-ui,sans-serif}.card{width:min(560px,calc(100% - 40px));background:#151821;border:1px solid rgba(255,255,255,.1);border-radius:22px;padding:28px;box-sizing:border-box}.eyebrow{font-size:11px;letter-spacing:.14em;color:#9aa4b6}.card h1{font-size:32px;letter-spacing:-.04em;margin:10px 0}.card p{color:#a4adbd;line-height:1.6}.button{display:inline-block;margin-top:14px;padding:11px 15px;border-radius:12px;background:#f6f7fb;color:#090a0d;text-decoration:none;font-weight:700}.receipt{margin-top:18px;font-size:11px;color:#737d90}</style></head><body><section class="card"><div class="eyebrow">ROLL CALL / IDENTITY</div><h1>Sign-in needs to be restarted.</h1><p>Your identity is safe. The browser sign-in transaction could not be completed, so Roll Call stopped instead of accepting an unverified session.</p><a class="button" href="/api/auth/login?returnTo='+encodeURIComponent(returnTo)+'">Continue sign in</a><div class="receipt">'+reason+'</div></section></body></html>';
+        res.writeHead(409,{'content-type':'text/html; charset=utf-8','content-length':Buffer.byteLength(body),'cache-control':'no-store','x-content-type-options':'nosniff'});
+        res.end(body);
+        return;
       }
 
       if((req.method==='POST'||req.method==='GET')&&url.pathname==='/api/auth/logout'){
