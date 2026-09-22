@@ -109,6 +109,17 @@ const fetchImpl=async(url,options={})=>{
     });
   }
 
+  if(target.startsWith('https://experiential.test/api/experiential')){
+    assert.equal(options.headers['x-roll-call-toolkit-id'],'roll-call.experiential');
+    assert.equal(options.headers['x-roll-call-subject-id'],'subject-1');
+    assert.equal(options.headers['x-roll-call-organization-id'],'roll-call');
+    assert.equal(options.headers['x-roll-call-workspace-id'],'workspace-1');
+    return new Response(JSON.stringify({ok:true,source:'experiential-owner'}),{
+      status:200,
+      headers:{'content-type':'application/json','set-cookie':'experiential_api_session=must-not-leak; Path=/'}
+    });
+  }
+
   if(target.startsWith('https://experiential.test/app/experiential')){
     assert.equal(options.headers['x-roll-call-toolkit-id'],'roll-call.experiential');
     assert.equal(options.headers['x-roll-call-subject-id'],'subject-1');
@@ -252,6 +263,16 @@ test('Experiential same-origin route proxies entitled shared session and strips 
   assert.equal(r.headers.get('x-roll-call-same-origin'),'true');
   assert.equal(r.headers.get('set-cookie'),null);
   assert.match(await r.text(),/Experiential routed/);
+});
+
+test('Experiential API is routed through the same governed session boundary',async()=>{
+  const r=await fetch(base+'/api/experiential/programs',{headers:{cookie:shellCookieHeader()}});
+  assert.equal(r.status,200);
+  assert.equal(r.headers.get('x-roll-call-route-owner'),'roll-call.experiential');
+  assert.equal(r.headers.get('x-roll-call-same-origin'),'true');
+  assert.equal(r.headers.get('set-cookie'),null);
+  const b=await r.json();
+  assert.equal(b.source,'experiential-owner');
 });
 
 test('metadata advertises Broadcast, Field, Experiential and Roll Call Core', async()=>{ const {r,b}=await get('/bootstrap/v1/metadata'); assert.equal(r.status,200); assert.deepEqual(b.reference_consumers,consumers); assert.equal(b.omni_read_broker.available,true); assert.equal(b.roll_call_core.available,true); assert.equal(b.roll_call_browser_session.available,true); assert.equal(b.roll_call_field_route.available,true); assert.equal(b.roll_call_field_route.path_prefix,'/app/field'); assert.equal(b.roll_call_experiential_route.available,true); assert.equal(b.roll_call_experiential_route.path_prefix,'/app/experiential'); });
