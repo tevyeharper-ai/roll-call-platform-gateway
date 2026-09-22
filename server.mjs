@@ -37,6 +37,7 @@ function requiredIdentityClaims(payload) {
   return required.filter(k => payload?.[k] === undefined || payload?.[k] === null || payload?.[k] === '');
 }
 function cleanUrl(value=''){ return String(value||'').trim().replace(/\/$/,''); }
+function normalizeBasePath(value=''){const raw=String(value||'').trim();if(!raw||raw==='/')return '';return '/'+raw.replace(/^\/+|\/+$/g,'');}
 function uuid(value){ return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value||'')); }
 function parseWorkspaceBindings(raw=''){
   if(!String(raw||'').trim())return {};
@@ -80,6 +81,7 @@ export function loadConfig(env = process.env) {
     },
     broadcastOwner:{
       baseUrl:cleanUrl(env.RC_ROLL_CALL_BROADCAST_URL),
+      basePath:normalizeBasePath(env.RC_ROLL_CALL_BROADCAST_BASE_PATH||'/app/broadcast'),
       serviceKey:String(env.RC_ROLL_CALL_BROADCAST_SERVICE_KEY||'').trim()
     },
     omni: {
@@ -206,6 +208,7 @@ async function fetchJson(fetchImpl,url,options={}){
 function broadcastAppRoutingFailures(config){
   const failures=[];
   if(!config.broadcastOwner.baseUrl.startsWith('https://'))failures.push('broadcast_owner_url_invalid');
+  if(config.broadcastOwner.basePath!=='/app/broadcast')failures.push('broadcast_owner_base_path_invalid');
   if(browserAuthFailures(config.browserAuth).length)failures.push('roll_call_browser_session_not_ready');
   if(platformAccessFailures(config).length)failures.push('platform_access_not_ready');
   return failures;
@@ -467,7 +470,7 @@ async function createBroadcastCampaignFromEvent({config,fetchImpl,correlation,ev
   if(intent?.requested_by&&String(intent.requested_by)!==subjectId)return {ok:false,status:403,body:{error:'promotion_requested_by_subject_mismatch'}};
 
   const canonicalIntent={...intent,requested_by:subjectId,workspace_id:workspaceId,event_id:String(eventKey)};
-  const owner=await fetchJson(fetchImpl,config.broadcastOwner.baseUrl+'/api/platform/events/'+encodeURIComponent(eventKey)+'/campaign-intents',{
+  const owner=await fetchJson(fetchImpl,config.broadcastOwner.baseUrl+config.broadcastOwner.basePath+'/api/platform/events/'+encodeURIComponent(eventKey)+'/campaign-intents',{
     method:'POST',
     headers:{
       'content-type':'application/json',
@@ -573,7 +576,7 @@ export function createServer(config = loadConfig(), deps={}) {
           omni_read_broker:{available:omniReadFailures(config).length===0,readiness_endpoint:'/v1/omni/readiness'},
           roll_call_core:{available:platformAccessFailures(config).length===0,context_endpoint:'/v1/core/context',workspace_discovery_endpoint:'/v1/core/workspaces',entitlement_endpoint:'/v1/entitlements/resolve',access_decision_endpoint:'/v1/access/decisions'},
           roll_call_browser_session:{available:browserAuthFailures(config.browserAuth).length===0,login_endpoint:'/api/auth/login',callback_endpoint:'/auth/callback',session_endpoint:'/v1/shell/session'},
-          roll_call_broadcast_route:{available:broadcastAppRoutingFailures(config).length===0,path_prefix:'/app/broadcast',owner:config.broadcastOwner.baseUrl||null}
+          roll_call_broadcast_route:{available:broadcastAppRoutingFailures(config).length===0,path_prefix:config.broadcastOwner.basePath||'/app/broadcast',owner:config.broadcastOwner.baseUrl||null}
         }, correlation);
       }
       if (req.method === 'GET' && url.pathname === '/ready') {
