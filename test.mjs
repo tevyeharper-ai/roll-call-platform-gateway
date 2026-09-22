@@ -21,7 +21,7 @@ const config = loadConfig({
   RC_OMNI_GATEWAY_SERVICE_KEY_SHA256:hash(omniKey),
   RC_PLATFORM_ACCESS_URL:'https://access.test',RC_PLATFORM_ACCESS_GATEWAY_KEY:accessKey,
   RC_ROLL_CALL_EVENTS_READ_URL:'https://events.test',RC_ROLL_CALL_EVENTS_READ_KEY:ownerKey,
-  RC_ROLL_CALL_BROADCAST_URL:'https://broadcast.test',RC_ROLL_CALL_BROADCAST_SERVICE_KEY:'broadcast-owner-key',
+  RC_ROLL_CALL_BROADCAST_URL:'https://broadcast.test',RC_ROLL_CALL_BROADCAST_BASE_PATH:'/app/broadcast',RC_ROLL_CALL_BROADCAST_SERVICE_KEY:'broadcast-owner-key',
   RC_EVENTS_WORKSPACE_BINDINGS_JSON:JSON.stringify({'roll-call:workspace-1':{tenant_id:tenantId,workspace_id:workspaceId}}),
   RC_OMNI_ROLL_CALL_ORGANIZATION_ID:'roll-call-events',RC_OMNI_ROLL_CALL_TENANT_ID:tenantId,RC_OMNI_ROLL_CALL_WORKSPACE_ID:workspaceId,
   RC_ACCESS_RECEIPT_MAX_AGE_SECONDS:'120'
@@ -92,7 +92,7 @@ const fetchImpl=async(url,options={})=>{
       }
     }),{status:200,headers:{'content-type':'application/json'}});
   }
-  if(target.startsWith('https://broadcast.test/app/broadcast')){
+  if(target.startsWith('https://broadcast.test/app/broadcast')&&!target.includes('/api/platform/')){
     assert.equal(options.headers['x-roll-call-toolkit-id'],'roll-call.broadcast');
     assert.equal(options.headers['x-roll-call-subject-id'],'subject-1');
     assert.equal(options.headers['x-roll-call-organization-id'],'roll-call');
@@ -103,7 +103,7 @@ const fetchImpl=async(url,options={})=>{
       headers:{'content-type':'text/html; charset=utf-8','set-cookie':'brdcst_session=must-not-leak; Path=/'}
     });
   }
-  if(target==='https://broadcast.test/api/platform/events/event-123/campaign-intents'){
+  if(target==='https://broadcast.test/app/broadcast/api/platform/events/event-123/campaign-intents'){
     assert.equal(options.method,'POST');
     assert.equal(options.headers['x-platform-service-key'],'broadcast-owner-key');
     assert.equal(options.headers['x-roll-call-subject-id'],'subject-1');
