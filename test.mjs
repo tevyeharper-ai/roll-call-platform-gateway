@@ -163,7 +163,7 @@ function sign(payload, key=privateKey) {
 }
 function claim(overrides={}) { const now=Math.floor(Date.now()/1000); return {principal_id:'user-1',principal_type:'human',tenant_id:'tenant-1',application_id:'events',workspace_id:'ops',environment:'staging',permissions:['events.read'],roles:['operator'],assurance:'staging-test',iat:now-1,exp:now+300,assertion_id:'assert-1',trace_id:'tr-1',correlation_id:'corr-1',...overrides}; }
 
-test('health reports P3.6', async()=>{ const {r,b}=await get('/health'); assert.equal(r.status,200); assert.equal(b.status,'ok'); assert.equal(b.version,'P3.6.0'); });
+test('health reports P3.6', async()=>{ const {r,b}=await get('/health'); assert.equal(r.status,200); assert.equal(b.status,'ok'); assert.equal(b.version,'P3.6.1'); });
 function shellCookieHeader(){
   const identity={sub:'subject-1',issuer:'https://identity.test/realms/bsv-shared',name:'Test Operator',email:'operator@example.test',acr:'aal2',amr:['pwd','otp'],expiresAt:Date.now()+600000};
   const session=sealBrowserSession(identity,config.browserAuth);
