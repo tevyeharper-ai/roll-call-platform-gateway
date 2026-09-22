@@ -4,7 +4,7 @@ import { URL } from 'node:url';
 import { Readable } from 'node:stream';
 import {beginBrowserLogin,browserAuthFailures,completeBrowserLogin,loadBrowserAuthConfig,logoutCookies,readBrowserCredentials,safeReturnTo} from './browser-session.mjs';
 
-const VERSION = 'P3.6.0';
+const VERSION = 'P3.6.1';
 const SERVICE = 'roll-call-platform-gateway';
 const DEFAULT_CONSUMERS = ['events', 'broadcast', 'field', 'experiential', 'asmbly'];
 const CORRELATION_HEADERS = [
@@ -84,6 +84,10 @@ export function loadConfig(env = process.env) {
       baseUrl:cleanUrl(env.RC_ROLL_CALL_BROADCAST_URL),
       basePath:normalizeBasePath(env.RC_ROLL_CALL_BROADCAST_BASE_PATH||'/app/broadcast'),
       serviceKey:String(env.RC_ROLL_CALL_BROADCAST_SERVICE_KEY||'').trim()
+    },
+    fieldOwner:{
+      baseUrl:cleanUrl(env.RC_ROLL_CALL_FIELD_URL),
+      basePath:normalizeBasePath(env.RC_ROLL_CALL_FIELD_BASE_PATH||'/app/field')
     },
     omni: {
       serviceKeyHash: String(env.RC_OMNI_GATEWAY_SERVICE_KEY_SHA256 || '').trim(),
@@ -216,6 +220,15 @@ function broadcastAppRoutingFailures(config){
   return failures;
 }
 
+function fieldAppRoutingFailures(config){
+  const failures=[];
+  if(!config.fieldOwner.baseUrl.startsWith('https://'))failures.push('field_owner_url_invalid');
+  if(config.fieldOwner.basePath!=='/app/field')failures.push('field_owner_base_path_invalid');
+  if(browserAuthFailures(config.browserAuth).length)failures.push('roll_call_browser_session_not_ready');
+  if(platformAccessFailures(config).length)failures.push('platform_access_not_ready');
+  return failures;
+}
+
 function proxyRequestHeaders(req,correlation,session){
   const headers={};
   const blocked=new Set(['host','connection','transfer-encoding','content-length','upgrade','proxy-connection']);
@@ -284,6 +297,79 @@ async function proxyBroadcastApp({req,res,url,config,fetchImpl,correlation}){
 
   const response=await fetchImpl(target,options);
   const headers=proxyResponseHeaders(response,config);
+  res.writeHead(response.status,headers);
+  if(method==='HEAD'||!response.body){res.end();return;}
+  Readable.fromWeb(response.body).pipe(res);
+}
+
+function fieldProxyRequestHeaders(req,correlation,session){
+  const headers={};
+  const blocked=new Set(['host','connection','transfer-encoding','content-length','upgrade','proxy-connection']);
+  for(const [key,value] of Object.entries(req.headers)){
+    if(blocked.has(key.toLowerCase())||value===undefined)continue;
+    headers[key]=Array.isArray(value)?value.join(', '):String(value);
+  }
+  headers['x-forwarded-prefix']='/app/field';
+  headers['x-roll-call-toolkit-id']='roll-call.field';
+  headers['x-roll-call-subject-id']=String(session?.shell?.actor?.subject_id||'');
+  headers['x-roll-call-organization-id']=String(session?.shell?.organization?.organization_id||'');
+  headers['x-roll-call-workspace-id']=String(session?.shell?.workspace?.workspace_id||'');
+  for(const [key,value] of Object.entries(correlation))if(value)headers[key]=value;
+  return headers;
+}
+
+function fieldProxyResponseHeaders(response,config){
+  const headers={};
+  const blocked=new Set(['connection','transfer-encoding','content-length','content-encoding','set-cookie','keep-alive','proxy-authenticate','proxy-authorization','te','trailer','upgrade']);
+  for(const [key,value] of response.headers.entries()){
+    if(blocked.has(key.toLowerCase()))continue;
+    if(key.toLowerCase()==='location'){
+      const owner=config.fieldOwner.baseUrl;
+      headers[key]=value.startsWith(owner)?value.slice(owner.length)||'/app/field':value;
+      continue;
+    }
+    headers[key]=value;
+  }
+  headers['x-roll-call-route-owner']='roll-call.field';
+  headers['x-roll-call-same-origin']='true';
+  return headers;
+}
+
+async function proxyFieldApp({req,res,url,config,fetchImpl,correlation}){
+  const failures=fieldAppRoutingFailures(config);
+  if(failures.length)return send(res,503,{error:'field_same_origin_not_ready',failures},correlation);
+
+  const shell=await resolveShellSession({
+    config,
+    fetchImpl,
+    correlation,
+    cookieHeader:req.headers.cookie||'',
+    query:new URLSearchParams('toolkit=field')
+  });
+
+  if(shell.status!==200){
+    if(shell.status===401&&(req.method==='GET'||req.method==='HEAD')){
+      const returnTo=url.pathname+url.search;
+      return redirect(res,'/api/auth/login?returnTo='+encodeURIComponent(returnTo));
+    }
+    return send(res,shell.status,shell.body,correlation);
+  }
+
+  const target=config.fieldOwner.baseUrl+url.pathname+url.search;
+  const method=String(req.method||'GET').toUpperCase();
+  const options={
+    method,
+    headers:fieldProxyRequestHeaders(req,correlation,shell.body),
+    redirect:'manual',
+    signal:AbortSignal.timeout(30000)
+  };
+  if(!['GET','HEAD'].includes(method)){
+    options.body=req;
+    options.duplex='half';
+  }
+
+  const response=await fetchImpl(target,options);
+  const headers=fieldProxyResponseHeaders(response,config);
   res.writeHead(response.status,headers);
   if(method==='HEAD'||!response.body){res.end();return;}
   Readable.fromWeb(response.body).pipe(res);
@@ -578,7 +664,8 @@ export function createServer(config = loadConfig(), deps={}) {
           omni_read_broker:{available:omniReadFailures(config).length===0,readiness_endpoint:'/v1/omni/readiness'},
           roll_call_core:{available:platformAccessFailures(config).length===0,context_endpoint:'/v1/core/context',workspace_discovery_endpoint:'/v1/core/workspaces',entitlement_endpoint:'/v1/entitlements/resolve',access_decision_endpoint:'/v1/access/decisions'},
           roll_call_browser_session:{available:browserAuthFailures(config.browserAuth).length===0,login_endpoint:'/api/auth/login',callback_endpoint:'/auth/callback',session_endpoint:'/v1/shell/session'},
-          roll_call_broadcast_route:{available:broadcastAppRoutingFailures(config).length===0,path_prefix:config.broadcastOwner.basePath||'/app/broadcast',owner:config.broadcastOwner.baseUrl||null}
+          roll_call_broadcast_route:{available:broadcastAppRoutingFailures(config).length===0,path_prefix:config.broadcastOwner.basePath||'/app/broadcast',owner:config.broadcastOwner.baseUrl||null},
+          roll_call_field_route:{available:fieldAppRoutingFailures(config).length===0,path_prefix:config.fieldOwner.basePath||'/app/field',owner:config.fieldOwner.baseUrl||null}
         }, correlation);
       }
       if (req.method === 'GET' && url.pathname === '/ready') {
@@ -593,7 +680,8 @@ export function createServer(config = loadConfig(), deps={}) {
           omni_read_ready:omniReadFailures(config).length===0,
           roll_call_core_ready:platformAccessFailures(config).length===0,
           roll_call_browser_session_ready:browserAuthFailures(config.browserAuth).length===0,
-          roll_call_broadcast_same_origin_ready:broadcastAppRoutingFailures(config).length===0
+          roll_call_broadcast_same_origin_ready:broadcastAppRoutingFailures(config).length===0,
+          roll_call_field_same_origin_ready:fieldAppRoutingFailures(config).length===0
         }, correlation);
       }
       if(req.method==='GET'&&url.pathname==='/v1/omni/readiness'){
@@ -666,6 +754,10 @@ export function createServer(config = loadConfig(), deps={}) {
 
       if(url.pathname==='/app/broadcast'||url.pathname.startsWith('/app/broadcast/')){
         return await proxyBroadcastApp({req,res,url,config,fetchImpl,correlation});
+      }
+
+      if(url.pathname==='/app/field'||url.pathname.startsWith('/app/field/')){
+        return await proxyFieldApp({req,res,url,config,fetchImpl,correlation});
       }
 
       if (req.method === 'GET' && url.pathname === '/v1/identity/metadata') {
@@ -747,7 +839,8 @@ export function start(env = process.env) {
       omni_read_ready:omniReadFailures(config).length===0,
       roll_call_core_ready:platformAccessFailures(config).length===0,
       roll_call_browser_session_ready:browserAuthFailures(config.browserAuth).length===0,
-      roll_call_broadcast_same_origin_ready:broadcastAppRoutingFailures(config).length===0,timestamp:nowIso()
+      roll_call_broadcast_same_origin_ready:broadcastAppRoutingFailures(config).length===0,
+      roll_call_field_same_origin_ready:fieldAppRoutingFailures(config).length===0,timestamp:nowIso()
     }));
   });
   return server;
