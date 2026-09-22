@@ -6,7 +6,9 @@ export const browserCookies={
   state:'__Host-roll_call_oidc_state',
   verifier:'__Host-roll_call_pkce',
   nonce:'__Host-roll_call_nonce',
-  returnTo:'__Host-roll_call_return'
+  returnTo:'__Host-roll_call_return',
+  transaction:'__Host-roll_call_oidc_tx',
+  recovery:'__Host-roll_call_oidc_recovery'
 };
 
 function clean(value){return String(value??'').trim();}
@@ -89,6 +91,37 @@ export function openBrowserSession(value,config){
 export function sealIdentityToken(token,config){return seal(token,'roll-call-identity-token-v1',config.sessionSecret);}
 export function openIdentityToken(value,config){return open(value,'roll-call-identity-token-v1',config.sessionSecret);}
 
+function sealOidcTransaction(value,config){
+  return seal(JSON.stringify(value),'roll-call-oidc-transaction-v1',config.sessionSecret);
+}
+function openOidcTransaction(value,config){
+  try{
+    const raw=open(value,'roll-call-oidc-transaction-v1',config.sessionSecret);
+    if(!raw)return null;
+    const tx=JSON.parse(raw);
+    if(!tx?.state||!tx?.verifier||!tx?.nonce||!tx?.returnTo||!tx?.createdAt)return null;
+    if(Date.now()-Number(tx.createdAt)>30*60*1000)return null;
+    return tx;
+  }catch{return null;}
+}
+function sealStateEnvelope(value,config){
+  return seal(JSON.stringify(value),'roll-call-oidc-state-envelope-v1',config.sessionSecret);
+}
+function openStateEnvelope(value,config){
+  try{
+    const raw=open(value,'roll-call-oidc-state-envelope-v1',config.sessionSecret);
+    if(!raw)return null;
+    const state=JSON.parse(raw);
+    if(!state?.id||!state?.returnTo||!state?.createdAt)return null;
+    if(Date.now()-Number(state.createdAt)>30*60*1000)return null;
+    return state;
+  }catch{return null;}
+}
+export function recoverBrowserReturnTo(state,config){
+  const recovered=openStateEnvelope(state,config);
+  return recovered?.returnTo?safeReturnTo(recovered.returnTo):null;
+}
+
 export function safeReturnTo(value){
   const v=String(value||'').trim();
   if(!v.startsWith('/')||v.startsWith('//')||v.startsWith('/auth/')||v.startsWith('/api/auth/'))return '/app';
@@ -108,7 +141,10 @@ export async function discoverOidc(config,fetchImpl=fetch){
 
 export async function beginBrowserLogin(config,{returnTo='/app'}={},fetchImpl=fetch){
   const discovery=await discoverOidc(config,fetchImpl);
-  const state=randomBase64Url(32),verifier=randomBase64Url(48),nonce=randomBase64Url(32);
+  const returnPath=safeReturnTo(returnTo);
+  const verifier=randomBase64Url(48),nonce=randomBase64Url(32);
+  const state=sealStateEnvelope({id:randomBase64Url(24),returnTo:returnPath,createdAt:Date.now()},config);
+  const transaction=sealOidcTransaction({state,verifier,nonce,returnTo:returnPath,createdAt:Date.now()},config);
   const target=new URL(discovery.authorization_endpoint);
   target.searchParams.set('client_id',config.clientId);
   target.searchParams.set('redirect_uri',config.callbackUrl);
@@ -121,10 +157,11 @@ export async function beginBrowserLogin(config,{returnTo='/app'}={},fetchImpl=fe
   return {
     authorizationUrl:target.toString(),
     cookies:[
-      cookie(browserCookies.state,state),
-      cookie(browserCookies.verifier,verifier),
-      cookie(browserCookies.nonce,nonce),
-      cookie(browserCookies.returnTo,b64(safeReturnTo(returnTo)))
+      cookie(browserCookies.transaction,transaction,{maxAge:1800}),
+      clearCookie(browserCookies.state),
+      clearCookie(browserCookies.verifier),
+      clearCookie(browserCookies.nonce),
+      clearCookie(browserCookies.returnTo)
     ]
   };
 }
@@ -179,6 +216,7 @@ export async function completeBrowserLogin(config,{code,expectedState,state,veri
     cookies:[
       cookie(browserCookies.session,sealBrowserSession(identity,config),{maxAge:expiresIn}),
       cookie(browserCookies.identity,sealIdentityToken(body.id_token,config),{maxAge:expiresIn}),
+      clearCookie(browserCookies.transaction),clearCookie(browserCookies.recovery),
       clearCookie(browserCookies.state),clearCookie(browserCookies.verifier),clearCookie(browserCookies.nonce),clearCookie(browserCookies.returnTo)
     ]
   };
@@ -186,16 +224,30 @@ export async function completeBrowserLogin(config,{code,expectedState,state,veri
 
 export function readBrowserCredentials(cookieHeader,config){
   const jar=parseCookies(cookieHeader);
+  const tx=openOidcTransaction(jar[browserCookies.transaction],config);
   return {
     session:openBrowserSession(jar[browserCookies.session],config),
     identityToken:openIdentityToken(jar[browserCookies.identity],config),
-    returnTo:jar[browserCookies.returnTo]?Buffer.from(jar[browserCookies.returnTo],'base64url').toString('utf8'):null,
-    state:jar[browserCookies.state]||null,
-    verifier:jar[browserCookies.verifier]||null,
-    nonce:jar[browserCookies.nonce]||null
+    returnTo:tx?.returnTo||(jar[browserCookies.returnTo]?Buffer.from(jar[browserCookies.returnTo],'base64url').toString('utf8'):null),
+    state:tx?.state||jar[browserCookies.state]||null,
+    verifier:tx?.verifier||jar[browserCookies.verifier]||null,
+    nonce:tx?.nonce||jar[browserCookies.nonce]||null,
+    transactionPresent:Boolean(tx),
+    recovery:jar[browserCookies.recovery]||null
   };
 }
 
+export function loginRecoveryCookies(){
+  return [
+    clearCookie(browserCookies.transaction),
+    clearCookie(browserCookies.state),
+    clearCookie(browserCookies.verifier),
+    clearCookie(browserCookies.nonce),
+    clearCookie(browserCookies.returnTo),
+    cookie(browserCookies.recovery,'1',{maxAge:300})
+  ];
+}
+
 export function logoutCookies(){
-  return [browserCookies.session,browserCookies.identity,browserCookies.state,browserCookies.verifier,browserCookies.nonce,browserCookies.returnTo].map(clearCookie);
+  return [browserCookies.session,browserCookies.identity,browserCookies.transaction,browserCookies.recovery,browserCookies.state,browserCookies.verifier,browserCookies.nonce,browserCookies.returnTo].map(clearCookie);
 }
