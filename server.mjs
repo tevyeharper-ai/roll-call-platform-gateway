@@ -528,6 +528,12 @@ async function resolveShellSession({config,fetchImpl,correlation,cookieHeader,qu
   }
   if(!activeToolkit)return {status:403,body:{authenticated:true,error:'no_active_toolkit_entitlement',toolkits}};
 
+  const eventsBinding=workspaceBinding(
+    config.eventsOwner.workspaceBindings,
+    selected.organization.organization_id,
+    selected.workspace.workspace_id
+  );
+
   return {status:200,body:{
     authenticated:true,
     schema:'roll-call.shell-session.v1',
@@ -553,6 +559,13 @@ async function resolveShellSession({config,fetchImpl,correlation,cookieHeader,qu
       roles:context.body?.roles||[],
       effective_permissions:context.body?.effective_permissions||[],
       entitlements
+    },
+    owner_context:{
+      events:eventsBinding?{
+        tenant_id:eventsBinding.tenant_id,
+        workspace_id:eventsBinding.workspace_id,
+        application_id:'roll-call-events'
+      }:null
     },
     identity:{
       issuer:credentials.session.issuer,
