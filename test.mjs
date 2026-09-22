@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import { once } from 'node:events';
-import { createServer, loadConfig, validateAccessReceipt } from './server.mjs';
+import { browserAuthConfigForRequest, createServer, loadConfig, validateAccessReceipt } from './server.mjs';
 import {beginBrowserLogin,browserCookies,cookie,readBrowserCredentials,sealBrowserSession,sealIdentityToken} from './browser-session.mjs';
 
 const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -16,7 +16,7 @@ const workspaceId='22222222-2222-4222-8222-222222222222';
 
 const config = loadConfig({
   PORT:'0', RC_GATEWAY_SERVICE_ID:'roll-call-platform-gateway:p3.6-test', RC_GATEWAY_ENV:'staging',
-  RC_OIDC_ISSUER:'https://identity.test/realms/bsv-shared',RC_OIDC_CLIENT_ID:'roll-call-staging',RC_OIDC_CLIENT_SECRET:'0123456789abcdef0123456789abcdef',RC_PUBLIC_URL:'https://roll-call.test',RC_SESSION_SECRET:'abcdef0123456789abcdef0123456789',
+  RC_OIDC_ISSUER:'https://identity.test/realms/bsv-shared',RC_OIDC_CLIENT_ID:'roll-call-staging',RC_OIDC_CLIENT_SECRET:'0123456789abcdef0123456789abcdef',RC_PUBLIC_URL:'https://roll-call.test',RC_BROWSER_PUBLIC_ORIGINS:'https://rollcallevents.co,https://beta.rollcallevents.co',RC_SESSION_SECRET:'abcdef0123456789abcdef0123456789',
   RC_GATEWAY_PUBLIC_KEY_PEM:pub, RC_GATEWAY_PRIVATE_KEY_PEM:priv, RC_REFERENCE_CONSUMERS:consumers.join(','),
   RC_OMNI_GATEWAY_SERVICE_KEY_SHA256:hash(omniKey),
   RC_PLATFORM_ACCESS_URL:'https://access.test',RC_PLATFORM_ACCESS_GATEWAY_KEY:accessKey,
@@ -195,6 +195,18 @@ function shellCookieHeader(){
   const token=sealIdentityToken('identity-token',config.browserAuth);
   return cookie(browserCookies.session,session,{maxAge:600})+'; '+cookie(browserCookies.identity,token,{maxAge:600});
 }
+
+test('browser auth uses an explicitly allowed forwarded Roll Call origin',()=>{
+  const resolved=browserAuthConfigForRequest(config,{headers:{'x-forwarded-host':'rollcallevents.co','x-forwarded-proto':'https'}});
+  assert.equal(resolved.publicUrl,'https://rollcallevents.co');
+  assert.equal(resolved.callbackUrl,'https://rollcallevents.co/auth/callback');
+});
+
+test('browser auth rejects an unlisted forwarded host and keeps configured origin',()=>{
+  const resolved=browserAuthConfigForRequest(config,{headers:{'x-forwarded-host':'attacker.example','x-forwarded-proto':'https'}});
+  assert.equal(resolved.publicUrl,'https://roll-call.test');
+  assert.equal(resolved.callbackUrl,'https://roll-call.test/auth/callback');
+});
 
 test('OIDC login stores state verifier nonce and return target in one sealed transaction cookie',async()=>{
   const oidcFetch=async(url)=>{
