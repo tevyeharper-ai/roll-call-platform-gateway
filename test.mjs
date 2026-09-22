@@ -15,7 +15,7 @@ const tenantId='11111111-1111-4111-8111-111111111111';
 const workspaceId='22222222-2222-4222-8222-222222222222';
 
 const config = loadConfig({
-  PORT:'0', RC_GATEWAY_SERVICE_ID:'roll-call-platform-gateway:p3.5-test', RC_GATEWAY_ENV:'staging',
+  PORT:'0', RC_GATEWAY_SERVICE_ID:'roll-call-platform-gateway:p3.6-test', RC_GATEWAY_ENV:'staging',
   RC_OIDC_ISSUER:'https://identity.test/realms/bsv-shared',RC_OIDC_CLIENT_ID:'roll-call-staging',RC_OIDC_CLIENT_SECRET:'0123456789abcdef0123456789abcdef',RC_PUBLIC_URL:'https://roll-call.test',RC_SESSION_SECRET:'abcdef0123456789abcdef0123456789',
   RC_GATEWAY_PUBLIC_KEY_PEM:pub, RC_GATEWAY_PRIVATE_KEY_PEM:priv, RC_REFERENCE_CONSUMERS:consumers.join(','),
   RC_OMNI_GATEWAY_SERVICE_KEY_SHA256:hash(omniKey),
@@ -92,6 +92,17 @@ const fetchImpl=async(url,options={})=>{
       }
     }),{status:200,headers:{'content-type':'application/json'}});
   }
+  if(target.startsWith('https://broadcast.test/app/broadcast')){
+    assert.equal(options.headers['x-roll-call-toolkit-id'],'roll-call.broadcast');
+    assert.equal(options.headers['x-roll-call-subject-id'],'subject-1');
+    assert.equal(options.headers['x-roll-call-organization-id'],'roll-call');
+    assert.equal(options.headers['x-roll-call-workspace-id'],'workspace-1');
+    assert.match(String(options.headers.cookie||''),/rc_/);
+    return new Response('<!doctype html><html><body>Broadcast routed</body></html>',{
+      status:200,
+      headers:{'content-type':'text/html; charset=utf-8','set-cookie':'brdcst_session=must-not-leak; Path=/'}
+    });
+  }
   if(target==='https://broadcast.test/api/platform/events/event-123/campaign-intents'){
     assert.equal(options.method,'POST');
     assert.equal(options.headers['x-platform-service-key'],'broadcast-owner-key');
@@ -138,7 +149,7 @@ function sign(payload, key=privateKey) {
 }
 function claim(overrides={}) { const now=Math.floor(Date.now()/1000); return {principal_id:'user-1',principal_type:'human',tenant_id:'tenant-1',application_id:'events',workspace_id:'ops',environment:'staging',permissions:['events.read'],roles:['operator'],assurance:'staging-test',iat:now-1,exp:now+300,assertion_id:'assert-1',trace_id:'tr-1',correlation_id:'corr-1',...overrides}; }
 
-test('health reports P3.5', async()=>{ const {r,b}=await get('/health'); assert.equal(r.status,200); assert.equal(b.status,'ok'); assert.equal(b.version,'P3.5.0'); });
+test('health reports P3.6', async()=>{ const {r,b}=await get('/health'); assert.equal(r.status,200); assert.equal(b.status,'ok'); assert.equal(b.version,'P3.6.0'); });
 function shellCookieHeader(){
   const identity={sub:'subject-1',issuer:'https://identity.test/realms/bsv-shared',name:'Test Operator',email:'operator@example.test',acr:'aal2',amr:['pwd','otp'],expiresAt:Date.now()+600000};
   const session=sealBrowserSession(identity,config.browserAuth);
@@ -170,8 +181,22 @@ test('shared shell session fails closed for unentitled toolkit',async()=>{
   assert.equal(b.error,'toolkit_entitlement_required');
 });
 
+test('Broadcast same-origin route redirects unauthenticated browser to shared login',async()=>{
+  const r=await fetch(base+'/app/broadcast',{redirect:'manual'});
+  assert.equal(r.status,302);
+  assert.match(r.headers.get('location')||'',/^\/api\/auth\/login\?returnTo=/);
+});
+test('Broadcast same-origin route proxies entitled shared session and strips toolkit cookies',async()=>{
+  const r=await fetch(base+'/app/broadcast',{headers:{cookie:shellCookieHeader()}});
+  assert.equal(r.status,200);
+  assert.equal(r.headers.get('x-roll-call-route-owner'),'roll-call.broadcast');
+  assert.equal(r.headers.get('x-roll-call-same-origin'),'true');
+  assert.equal(r.headers.get('set-cookie'),null);
+  assert.match(await r.text(),/Broadcast routed/);
+});
+
 test('metadata advertises Broadcast and Roll Call Core', async()=>{ const {r,b}=await get('/bootstrap/v1/metadata'); assert.equal(r.status,200); assert.deepEqual(b.reference_consumers,consumers); assert.equal(b.omni_read_broker.available,true); assert.equal(b.roll_call_core.available,true); assert.equal(b.roll_call_browser_session.available,true); });
-test('readiness includes Core and OMNI state', async()=>{ const {r,b}=await get('/ready'); assert.equal(r.status,200); assert.equal(b.status,'ready'); assert.equal(b.omni_read_ready,true); assert.equal(b.roll_call_core_ready,true); assert.equal(b.roll_call_browser_session_ready,true); });
+test('readiness includes Core, browser session and Broadcast same-origin state', async()=>{ const {r,b}=await get('/ready'); assert.equal(r.status,200); assert.equal(b.status,'ready'); assert.equal(b.omni_read_ready,true); assert.equal(b.roll_call_core_ready,true); assert.equal(b.roll_call_browser_session_ready,true); assert.equal(b.roll_call_broadcast_same_origin_ready,true); });
 test('OMNI broker readiness remains independently green',async()=>{const {r,b}=await get('/v1/omni/readiness');assert.equal(r.status,200);assert.equal(b.organization_id,'roll-call-events');});
 for (const consumer of consumers) test(`${consumer} reference is governed`, async()=>{ const {r,b}=await get(`/v1/${consumer}/reference`); assert.equal(r.status,200); assert.equal(b.consumer,consumer); assert.equal(b.contract_version,'P3.4'); });
 test('unsupported reference fails closed',async()=>{const {r,b}=await get('/v1/unknown/reference');assert.equal(r.status,404);assert.equal(b.error,'unsupported_consumer');});
