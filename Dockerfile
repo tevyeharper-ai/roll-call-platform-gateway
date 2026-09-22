@@ -3,5 +3,7 @@ WORKDIR /app
 COPY package.json ./
 COPY server.mjs ./
 COPY browser-session.mjs ./
+COPY test.mjs ./
+RUN npm run check && npm test
 EXPOSE 8080
 CMD ["node", "server.mjs"]
