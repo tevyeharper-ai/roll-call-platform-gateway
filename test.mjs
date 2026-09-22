@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import { once } from 'node:events';
 import { createServer, loadConfig, validateAccessReceipt } from './server.mjs';
-import {browserCookies,cookie,sealBrowserSession,sealIdentityToken} from './browser-session.mjs';
+import {beginBrowserLogin,browserCookies,cookie,readBrowserCredentials,sealBrowserSession,sealIdentityToken} from './browser-session.mjs';
 
 const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
 const pub = publicKey.export({type:'spki',format:'pem'}).toString();
@@ -188,13 +188,42 @@ function sign(payload, key=privateKey) {
 }
 function claim(overrides={}) { const now=Math.floor(Date.now()/1000); return {principal_id:'user-1',principal_type:'human',tenant_id:'tenant-1',application_id:'events',workspace_id:'ops',environment:'staging',permissions:['events.read'],roles:['operator'],assurance:'staging-test',iat:now-1,exp:now+300,assertion_id:'assert-1',trace_id:'tr-1',correlation_id:'corr-1',...overrides}; }
 
-test('health reports P3.7', async()=>{ const {r,b}=await get('/health'); assert.equal(r.status,200); assert.equal(b.status,'ok'); assert.equal(b.version,'P3.7.0'); });
+test('health reports P3.7.1', async()=>{ const {r,b}=await get('/health'); assert.equal(r.status,200); assert.equal(b.status,'ok'); assert.equal(b.version,'P3.7.1'); });
 function shellCookieHeader(){
   const identity={sub:'subject-1',issuer:'https://identity.test/realms/bsv-shared',name:'Test Operator',email:'operator@example.test',acr:'aal2',amr:['pwd','otp'],expiresAt:Date.now()+600000};
   const session=sealBrowserSession(identity,config.browserAuth);
   const token=sealIdentityToken('identity-token',config.browserAuth);
   return cookie(browserCookies.session,session,{maxAge:600})+'; '+cookie(browserCookies.identity,token,{maxAge:600});
 }
+
+test('OIDC login stores state verifier nonce and return target in one sealed transaction cookie',async()=>{
+  const oidcFetch=async(url)=>{
+    assert.equal(String(url),'https://identity.test/realms/bsv-shared/.well-known/openid-configuration');
+    return new Response(JSON.stringify({
+      issuer:'https://identity.test/realms/bsv-shared',
+      authorization_endpoint:'https://identity.test/realms/bsv-shared/protocol/openid-connect/auth',
+      token_endpoint:'https://identity.test/realms/bsv-shared/protocol/openid-connect/token',
+      jwks_uri:'https://identity.test/realms/bsv-shared/protocol/openid-connect/certs'
+    }),{status:200,headers:{'content-type':'application/json'}});
+  };
+  const begin=await beginBrowserLogin(config.browserAuth,{returnTo:'/app/field'},oidcFetch);
+  assert.ok(begin.authorizationUrl.includes('state='));
+  const txCookie=begin.cookies.find(value=>value.startsWith(browserCookies.transaction+'='));
+  assert.ok(txCookie);
+  const cookieHeader=txCookie.split(';')[0];
+  const credentials=readBrowserCredentials(cookieHeader,config.browserAuth);
+  assert.equal(credentials.transactionPresent,true);
+  assert.equal(credentials.returnTo,'/app/field');
+  assert.ok(credentials.state);
+  assert.ok(credentials.verifier);
+  assert.ok(credentials.nonce);
+});
+
+test('legacy identity-state error URL restarts sign-in instead of returning not_found',async()=>{
+  const r=await fetch(base+'/?identityError=identity_state_invalid&returnTo=%2Fapp%2Ffield',{redirect:'manual'});
+  assert.equal(r.status,302);
+  assert.equal(r.headers.get('location'),'/api/auth/login?returnTo=%2Fapp%2Ffield');
+});
 
 test('shared shell session resolves identity through Platform Access',async()=>{
   const {r,b}=await get('/v1/shell/session?organization_id=roll-call&workspace_id=workspace-1&toolkit=broadcast',{cookie:shellCookieHeader()});
