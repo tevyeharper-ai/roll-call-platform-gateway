@@ -4,7 +4,7 @@ import { URL } from 'node:url';
 import { Readable } from 'node:stream';
 import {beginBrowserLogin,browserAuthFailures,completeBrowserLogin,loadBrowserAuthConfig,logoutCookies,readBrowserCredentials,safeReturnTo} from './browser-session.mjs';
 
-const VERSION = 'P3.6.1';
+const VERSION = 'P3.7.0';
 const SERVICE = 'roll-call-platform-gateway';
 const DEFAULT_CONSUMERS = ['events', 'broadcast', 'field', 'experiential', 'asmbly'];
 const CORRELATION_HEADERS = [
@@ -88,6 +88,10 @@ export function loadConfig(env = process.env) {
     fieldOwner:{
       baseUrl:cleanUrl(env.RC_ROLL_CALL_FIELD_URL),
       basePath:normalizeBasePath(env.RC_ROLL_CALL_FIELD_BASE_PATH||'/app/field')
+    },
+    experientialOwner:{
+      baseUrl:cleanUrl(env.RC_ROLL_CALL_EXPERIENTIAL_URL),
+      basePath:normalizeBasePath(env.RC_ROLL_CALL_EXPERIENTIAL_BASE_PATH||'/app/experiential')
     },
     omni: {
       serviceKeyHash: String(env.RC_OMNI_GATEWAY_SERVICE_KEY_SHA256 || '').trim(),
@@ -224,6 +228,15 @@ function fieldAppRoutingFailures(config){
   const failures=[];
   if(!config.fieldOwner.baseUrl.startsWith('https://'))failures.push('field_owner_url_invalid');
   if(config.fieldOwner.basePath!=='/app/field')failures.push('field_owner_base_path_invalid');
+  if(browserAuthFailures(config.browserAuth).length)failures.push('roll_call_browser_session_not_ready');
+  if(platformAccessFailures(config).length)failures.push('platform_access_not_ready');
+  return failures;
+}
+
+function experientialAppRoutingFailures(config){
+  const failures=[];
+  if(!config.experientialOwner.baseUrl.startsWith('https://'))failures.push('experiential_owner_url_invalid');
+  if(config.experientialOwner.basePath!=='/app/experiential')failures.push('experiential_owner_base_path_invalid');
   if(browserAuthFailures(config.browserAuth).length)failures.push('roll_call_browser_session_not_ready');
   if(platformAccessFailures(config).length)failures.push('platform_access_not_ready');
   return failures;
@@ -370,6 +383,80 @@ async function proxyFieldApp({req,res,url,config,fetchImpl,correlation}){
 
   const response=await fetchImpl(target,options);
   const headers=fieldProxyResponseHeaders(response,config);
+  res.writeHead(response.status,headers);
+  if(method==='HEAD'||!response.body){res.end();return;}
+  Readable.fromWeb(response.body).pipe(res);
+}
+
+
+function experientialProxyRequestHeaders(req,correlation,session){
+  const headers={};
+  const blocked=new Set(['host','connection','transfer-encoding','content-length','upgrade','proxy-connection']);
+  for(const [key,value] of Object.entries(req.headers)){
+    if(blocked.has(key.toLowerCase())||value===undefined)continue;
+    headers[key]=Array.isArray(value)?value.join(', '):String(value);
+  }
+  headers['x-forwarded-prefix']='/app/experiential';
+  headers['x-roll-call-toolkit-id']='roll-call.experiential';
+  headers['x-roll-call-subject-id']=String(session?.shell?.actor?.subject_id||'');
+  headers['x-roll-call-organization-id']=String(session?.shell?.organization?.organization_id||'');
+  headers['x-roll-call-workspace-id']=String(session?.shell?.workspace?.workspace_id||'');
+  for(const [key,value] of Object.entries(correlation))if(value)headers[key]=value;
+  return headers;
+}
+
+function experientialProxyResponseHeaders(response,config){
+  const headers={};
+  const blocked=new Set(['connection','transfer-encoding','content-length','content-encoding','set-cookie','keep-alive','proxy-authenticate','proxy-authorization','te','trailer','upgrade']);
+  for(const [key,value] of response.headers.entries()){
+    if(blocked.has(key.toLowerCase()))continue;
+    if(key.toLowerCase()==='location'){
+      const owner=config.experientialOwner.baseUrl;
+      headers[key]=value.startsWith(owner)?value.slice(owner.length)||'/app/experiential':value;
+      continue;
+    }
+    headers[key]=value;
+  }
+  headers['x-roll-call-route-owner']='roll-call.experiential';
+  headers['x-roll-call-same-origin']='true';
+  return headers;
+}
+
+async function proxyExperientialApp({req,res,url,config,fetchImpl,correlation}){
+  const failures=experientialAppRoutingFailures(config);
+  if(failures.length)return send(res,503,{error:'experiential_same_origin_not_ready',failures},correlation);
+
+  const shell=await resolveShellSession({
+    config,
+    fetchImpl,
+    correlation,
+    cookieHeader:req.headers.cookie||'',
+    query:new URLSearchParams('toolkit=experiential')
+  });
+
+  if(shell.status!==200){
+    if(shell.status===401&&(req.method==='GET'||req.method==='HEAD')){
+      const returnTo=url.pathname+url.search;
+      return redirect(res,'/api/auth/login?returnTo='+encodeURIComponent(returnTo));
+    }
+    return send(res,shell.status,shell.body,correlation);
+  }
+
+  const target=config.experientialOwner.baseUrl+url.pathname+url.search;
+  const method=String(req.method||'GET').toUpperCase();
+  const options={
+    method,
+    headers:experientialProxyRequestHeaders(req,correlation,shell.body),
+    redirect:'manual',
+    signal:AbortSignal.timeout(30000)
+  };
+  if(!['GET','HEAD'].includes(method)){
+    options.body=req;
+    options.duplex='half';
+  }
+
+  const response=await fetchImpl(target,options);
+  const headers=experientialProxyResponseHeaders(response,config);
   res.writeHead(response.status,headers);
   if(method==='HEAD'||!response.body){res.end();return;}
   Readable.fromWeb(response.body).pipe(res);
@@ -665,7 +752,8 @@ export function createServer(config = loadConfig(), deps={}) {
           roll_call_core:{available:platformAccessFailures(config).length===0,context_endpoint:'/v1/core/context',workspace_discovery_endpoint:'/v1/core/workspaces',entitlement_endpoint:'/v1/entitlements/resolve',access_decision_endpoint:'/v1/access/decisions'},
           roll_call_browser_session:{available:browserAuthFailures(config.browserAuth).length===0,login_endpoint:'/api/auth/login',callback_endpoint:'/auth/callback',session_endpoint:'/v1/shell/session'},
           roll_call_broadcast_route:{available:broadcastAppRoutingFailures(config).length===0,path_prefix:config.broadcastOwner.basePath||'/app/broadcast',owner:config.broadcastOwner.baseUrl||null},
-          roll_call_field_route:{available:fieldAppRoutingFailures(config).length===0,path_prefix:config.fieldOwner.basePath||'/app/field',owner:config.fieldOwner.baseUrl||null}
+          roll_call_field_route:{available:fieldAppRoutingFailures(config).length===0,path_prefix:config.fieldOwner.basePath||'/app/field',owner:config.fieldOwner.baseUrl||null},
+          roll_call_experiential_route:{available:experientialAppRoutingFailures(config).length===0,path_prefix:config.experientialOwner.basePath||'/app/experiential',owner:config.experientialOwner.baseUrl||null}
         }, correlation);
       }
       if (req.method === 'GET' && url.pathname === '/ready') {
@@ -681,7 +769,8 @@ export function createServer(config = loadConfig(), deps={}) {
           roll_call_core_ready:platformAccessFailures(config).length===0,
           roll_call_browser_session_ready:browserAuthFailures(config.browserAuth).length===0,
           roll_call_broadcast_same_origin_ready:broadcastAppRoutingFailures(config).length===0,
-          roll_call_field_same_origin_ready:fieldAppRoutingFailures(config).length===0
+          roll_call_field_same_origin_ready:fieldAppRoutingFailures(config).length===0,
+          roll_call_experiential_same_origin_ready:experientialAppRoutingFailures(config).length===0
         }, correlation);
       }
       if(req.method==='GET'&&url.pathname==='/v1/omni/readiness'){
@@ -760,6 +849,10 @@ export function createServer(config = loadConfig(), deps={}) {
         return await proxyFieldApp({req,res,url,config,fetchImpl,correlation});
       }
 
+      if(url.pathname==='/app/experiential'||url.pathname.startsWith('/app/experiential/')){
+        return await proxyExperientialApp({req,res,url,config,fetchImpl,correlation});
+      }
+
       if (req.method === 'GET' && url.pathname === '/v1/identity/metadata') {
         const jwk = nonempty(config.publicKeyPem) ? exportPublicJwk(config.publicKeyPem) : null;
         return send(res, nonempty(config.publicKeyPem) ? 200 : 503, {
@@ -791,6 +884,10 @@ export function createServer(config = loadConfig(), deps={}) {
       const eventReferenceMatch=url.pathname.match(/^\/v1\/events\/([^/]+)\/reference$/);
       if(req.method==='POST'&&eventReferenceMatch){
         const payload=await readJson(req);
+        if(!String(payload.identity_token||'').trim()){
+          const credentials=readBrowserCredentials(req.headers.cookie||'',config.browserAuth);
+          if(credentials.identityToken)payload.identity_token=credentials.identityToken;
+        }
         const result=await readCanonicalEventReference({config,fetchImpl,correlation,eventKey:decodeURIComponent(eventReferenceMatch[1]),payload});
         return send(res,result.status,result.body,correlation);
       }
@@ -840,7 +937,8 @@ export function start(env = process.env) {
       roll_call_core_ready:platformAccessFailures(config).length===0,
       roll_call_browser_session_ready:browserAuthFailures(config.browserAuth).length===0,
       roll_call_broadcast_same_origin_ready:broadcastAppRoutingFailures(config).length===0,
-      roll_call_field_same_origin_ready:fieldAppRoutingFailures(config).length===0,timestamp:nowIso()
+      roll_call_field_same_origin_ready:fieldAppRoutingFailures(config).length===0,
+      roll_call_experiential_same_origin_ready:experientialAppRoutingFailures(config).length===0,timestamp:nowIso()
     }));
   });
   return server;
