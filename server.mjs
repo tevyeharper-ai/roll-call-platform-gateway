@@ -853,6 +853,10 @@ export function createServer(config = loadConfig(), deps={}) {
         return await proxyExperientialApp({req,res,url,config,fetchImpl,correlation});
       }
 
+      if(url.pathname==='/api/experiential'||url.pathname.startsWith('/api/experiential/')){
+        return await proxyExperientialApp({req,res,url,config,fetchImpl,correlation});
+      }
+
       if (req.method === 'GET' && url.pathname === '/v1/identity/metadata') {
         const jwk = nonempty(config.publicKeyPem) ? exportPublicJwk(config.publicKeyPem) : null;
         return send(res, nonempty(config.publicKeyPem) ? 200 : 503, {
