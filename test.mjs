@@ -22,6 +22,7 @@ const config = loadConfig({
   RC_PLATFORM_ACCESS_URL:'https://access.test',RC_PLATFORM_ACCESS_GATEWAY_KEY:accessKey,
   RC_ROLL_CALL_EVENTS_READ_URL:'https://events.test',RC_ROLL_CALL_EVENTS_READ_KEY:ownerKey,
   RC_ROLL_CALL_BROADCAST_URL:'https://broadcast.test',RC_ROLL_CALL_BROADCAST_BASE_PATH:'/app/broadcast',RC_ROLL_CALL_BROADCAST_SERVICE_KEY:'broadcast-owner-key',
+  RC_ROLL_CALL_EXPERIENTIAL_URL:'https://experiential.test',RC_ROLL_CALL_EXPERIENTIAL_BASE_PATH:'/app/experiential',
   RC_EVENTS_WORKSPACE_BINDINGS_JSON:JSON.stringify({'roll-call:workspace-1':{tenant_id:tenantId,workspace_id:workspaceId}}),
   RC_OMNI_ROLL_CALL_ORGANIZATION_ID:'roll-call-events',RC_OMNI_ROLL_CALL_TENANT_ID:tenantId,RC_OMNI_ROLL_CALL_WORKSPACE_ID:workspaceId,
   RC_ACCESS_RECEIPT_MAX_AGE_SECONDS:'120'
@@ -50,7 +51,8 @@ const fetchImpl=async(url,options={})=>{
         roles:['owner'],effective_permissions:['*'],
         entitlements:[
           {toolkit_id:'roll-call.events',status:'active',source:'bundle'},
-          {toolkit_id:'roll-call.broadcast',status:'active',source:'bundle'}
+          {toolkit_id:'roll-call.broadcast',status:'active',source:'bundle'},
+          {toolkit_id:'roll-call.experiential',status:'active',source:'bundle'}
         ]
       }]
     }),{status:200,headers:{'content-type':'application/json'}});
@@ -59,7 +61,7 @@ const fetchImpl=async(url,options={})=>{
     accessCalls.push({path:'/v1/core/context',options});
     assert.equal(options.headers['x-platform-service-key'],accessKey);
     const payload=JSON.parse(options.body);
-    return new Response(JSON.stringify({schema:'roll-call.core-context.v1',subject_id:'subject-1',organization_id:payload.organization_id,workspace:{workspace_id:payload.workspace_id,name:'Agency Workspace'},roles:['owner'],effective_permissions:['*'],entitlements:[{toolkit_id:'roll-call.events',status:'active'},{toolkit_id:'roll-call.broadcast',status:'active'}],environment:'staging'}),{status:200,headers:{'content-type':'application/json'}});
+    return new Response(JSON.stringify({schema:'roll-call.core-context.v1',subject_id:'subject-1',organization_id:payload.organization_id,workspace:{workspace_id:payload.workspace_id,name:'Agency Workspace'},roles:['owner'],effective_permissions:['*'],entitlements:[{toolkit_id:'roll-call.events',status:'active'},{toolkit_id:'roll-call.broadcast',status:'active'},{toolkit_id:'roll-call.experiential',status:'active'}],environment:'staging'}),{status:200,headers:{'content-type':'application/json'}});
   }
   if(target==='https://access.test/v1/entitlements/resolve'){
     accessCalls.push({path:'/v1/entitlements/resolve',options});
@@ -101,6 +103,18 @@ const fetchImpl=async(url,options={})=>{
     return new Response('<!doctype html><html><body>Broadcast routed</body></html>',{
       status:200,
       headers:{'content-type':'text/html; charset=utf-8','set-cookie':'brdcst_session=must-not-leak; Path=/'}
+    });
+  }
+
+  if(target.startsWith('https://experiential.test/app/experiential')){
+    assert.equal(options.headers['x-roll-call-toolkit-id'],'roll-call.experiential');
+    assert.equal(options.headers['x-roll-call-subject-id'],'subject-1');
+    assert.equal(options.headers['x-roll-call-organization-id'],'roll-call');
+    assert.equal(options.headers['x-roll-call-workspace-id'],'workspace-1');
+    assert.ok(String(options.headers.cookie||'').length>20);
+    return new Response('<!doctype html><html><body>Experiential routed</body></html>',{
+      status:200,
+      headers:{'content-type':'text/html; charset=utf-8','set-cookie':'experiential_session=must-not-leak; Path=/'}
     });
   }
   if(target==='https://broadcast.test/app/broadcast/api/platform/events/event-123/campaign-intents'){
@@ -149,7 +163,7 @@ function sign(payload, key=privateKey) {
 }
 function claim(overrides={}) { const now=Math.floor(Date.now()/1000); return {principal_id:'user-1',principal_type:'human',tenant_id:'tenant-1',application_id:'events',workspace_id:'ops',environment:'staging',permissions:['events.read'],roles:['operator'],assurance:'staging-test',iat:now-1,exp:now+300,assertion_id:'assert-1',trace_id:'tr-1',correlation_id:'corr-1',...overrides}; }
 
-test('health reports P3.6', async()=>{ const {r,b}=await get('/health'); assert.equal(r.status,200); assert.equal(b.status,'ok'); assert.equal(b.version,'P3.6.0'); });
+test('health reports P3.7', async()=>{ const {r,b}=await get('/health'); assert.equal(r.status,200); assert.equal(b.status,'ok'); assert.equal(b.version,'P3.7.0'); });
 function shellCookieHeader(){
   const identity={sub:'subject-1',issuer:'https://identity.test/realms/bsv-shared',name:'Test Operator',email:'operator@example.test',acr:'aal2',amr:['pwd','otp'],expiresAt:Date.now()+600000};
   const session=sealBrowserSession(identity,config.browserAuth);
@@ -195,8 +209,22 @@ test('Broadcast same-origin route proxies entitled shared session and strips too
   assert.match(await r.text(),/Broadcast routed/);
 });
 
-test('metadata advertises Broadcast and Roll Call Core', async()=>{ const {r,b}=await get('/bootstrap/v1/metadata'); assert.equal(r.status,200); assert.deepEqual(b.reference_consumers,consumers); assert.equal(b.omni_read_broker.available,true); assert.equal(b.roll_call_core.available,true); assert.equal(b.roll_call_browser_session.available,true); });
-test('readiness includes Core, browser session and Broadcast same-origin state', async()=>{ const {r,b}=await get('/ready'); assert.equal(r.status,200); assert.equal(b.status,'ready'); assert.equal(b.omni_read_ready,true); assert.equal(b.roll_call_core_ready,true); assert.equal(b.roll_call_browser_session_ready,true); assert.equal(b.roll_call_broadcast_same_origin_ready,true); });
+test('Experiential same-origin route redirects unauthenticated browser to shared login',async()=>{
+  const r=await fetch(base+'/app/experiential',{redirect:'manual'});
+  assert.equal(r.status,302);
+  assert.match(r.headers.get('location')||'',/^\/api\/auth\/login\?returnTo=/);
+});
+test('Experiential same-origin route proxies entitled shared session and strips toolkit cookies',async()=>{
+  const r=await fetch(base+'/app/experiential',{headers:{cookie:shellCookieHeader()}});
+  assert.equal(r.status,200);
+  assert.equal(r.headers.get('x-roll-call-route-owner'),'roll-call.experiential');
+  assert.equal(r.headers.get('x-roll-call-same-origin'),'true');
+  assert.equal(r.headers.get('set-cookie'),null);
+  assert.match(await r.text(),/Experiential routed/);
+});
+
+test('metadata advertises Broadcast, Experiential and Roll Call Core', async()=>{ const {r,b}=await get('/bootstrap/v1/metadata'); assert.equal(r.status,200); assert.deepEqual(b.reference_consumers,consumers); assert.equal(b.omni_read_broker.available,true); assert.equal(b.roll_call_core.available,true); assert.equal(b.roll_call_browser_session.available,true); assert.equal(b.roll_call_experiential_route.available,true); });
+test('readiness includes Core, browser session, Broadcast and Experiential same-origin state', async()=>{ const {r,b}=await get('/ready'); assert.equal(r.status,200); assert.equal(b.status,'ready'); assert.equal(b.omni_read_ready,true); assert.equal(b.roll_call_core_ready,true); assert.equal(b.roll_call_browser_session_ready,true); assert.equal(b.roll_call_broadcast_same_origin_ready,true); assert.equal(b.roll_call_experiential_same_origin_ready,true); });
 test('OMNI broker readiness remains independently green',async()=>{const {r,b}=await get('/v1/omni/readiness');assert.equal(r.status,200);assert.equal(b.organization_id,'roll-call-events');});
 for (const consumer of consumers) test(`${consumer} reference is governed`, async()=>{ const {r,b}=await get(`/v1/${consumer}/reference`); assert.equal(r.status,200); assert.equal(b.consumer,consumer); assert.equal(b.contract_version,'P3.4'); });
 test('unsupported reference fails closed',async()=>{const {r,b}=await get('/v1/unknown/reference');assert.equal(r.status,404);assert.equal(b.error,'unsupported_consumer');});
@@ -216,6 +244,18 @@ test('Gateway brokers canonical Event reference after access decision',async()=>
   assert.equal(b.event_reference.event_id,'event-123');
   assert.equal(b.authorization.decision,'allow');
   assert.equal(b.authorization.receipt_id,'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
+});
+
+test('Gateway brokers Event reference from sealed browser session without exposing identity token',async()=>{
+  const r=await fetch(base+'/v1/events/event-123/reference',{
+    method:'POST',
+    headers:{'content-type':'application/json',cookie:shellCookieHeader()},
+    body:JSON.stringify({organization_id:'roll-call',workspace_id:'workspace-1'})
+  });
+  const b=await r.json();
+  assert.equal(r.status,200);
+  assert.equal(b.contract,'roll-call.event-reference.v1');
+  assert.equal(b.event_reference.event_id,'event-123');
 });
 test('Event reference fails closed when shared workspace has no Events binding',async()=>{
   const {r,b}=await post('/v1/events/event-123/reference',{identity_token:'token',organization_id:'roll-call',workspace_id:'unbound'});
