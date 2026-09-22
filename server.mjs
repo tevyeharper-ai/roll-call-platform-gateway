@@ -37,6 +37,7 @@ function requiredIdentityClaims(payload) {
   return required.filter(k => payload?.[k] === undefined || payload?.[k] === null || payload?.[k] === '');
 }
 function cleanUrl(value=''){ return String(value||'').trim().replace(/\/$/,''); }
+function cleanBasePath(value=''){ const raw=String(value||'').trim(); if(!raw||raw==='/')return ''; return '/'+raw.replace(/^\/+|\/+$/g,''); }
 function normalizeBasePath(value=''){const raw=String(value||'').trim();if(!raw||raw==='/')return '';return '/'+raw.replace(/^\/+|\/+$/g,'');}
 function uuid(value){ return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value||'')); }
 function parseWorkspaceBindings(raw=''){
@@ -208,6 +209,7 @@ async function fetchJson(fetchImpl,url,options={}){
 function broadcastAppRoutingFailures(config){
   const failures=[];
   if(!config.broadcastOwner.baseUrl.startsWith('https://'))failures.push('broadcast_owner_url_invalid');
+  if(config.broadcastOwner.basePath!=='/app/broadcast')failures.push('broadcast_owner_base_path_invalid');
   if(config.broadcastOwner.basePath!=='/app/broadcast')failures.push('broadcast_owner_base_path_invalid');
   if(browserAuthFailures(config.browserAuth).length)failures.push('roll_call_browser_session_not_ready');
   if(platformAccessFailures(config).length)failures.push('platform_access_not_ready');
