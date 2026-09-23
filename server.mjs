@@ -4,7 +4,7 @@ import { URL } from 'node:url';
 import { Readable } from 'node:stream';
 import {beginBrowserLogin,browserAuthFailures,completeBrowserLogin,loadBrowserAuthConfig,loginRecoveryCookies,logoutCookies,readBrowserCredentials,recoverBrowserReturnTo,safeReturnTo} from './browser-session.mjs';
 
-const VERSION = 'P3.7.1';
+const VERSION = 'P3.7.2';
 const SERVICE = 'roll-call-platform-gateway';
 const DEFAULT_CONSUMERS = ['events', 'broadcast', 'field', 'experiential', 'asmbly'];
 const CORRELATION_HEADERS = [
