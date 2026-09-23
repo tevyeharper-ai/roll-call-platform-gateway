@@ -188,7 +188,7 @@ function sign(payload, key=privateKey) {
 }
 function claim(overrides={}) { const now=Math.floor(Date.now()/1000); return {principal_id:'user-1',principal_type:'human',tenant_id:'tenant-1',application_id:'events',workspace_id:'ops',environment:'staging',permissions:['events.read'],roles:['operator'],assurance:'staging-test',iat:now-1,exp:now+300,assertion_id:'assert-1',trace_id:'tr-1',correlation_id:'corr-1',...overrides}; }
 
-test('health reports P3.7.1', async()=>{ const {r,b}=await get('/health'); assert.equal(r.status,200); assert.equal(b.status,'ok'); assert.equal(b.version,'P3.7.1'); });
+test('health reports P3.7.2', async()=>{ const {r,b}=await get('/health'); assert.equal(r.status,200); assert.equal(b.status,'ok'); assert.equal(b.version,'P3.7.2'); });
 function shellCookieHeader(){
   const identity={sub:'subject-1',issuer:'https://identity.test/realms/bsv-shared',name:'Test Operator',email:'operator@example.test',acr:'aal2',amr:['pwd','otp'],expiresAt:Date.now()+600000};
   const session=sealBrowserSession(identity,config.browserAuth);
@@ -404,3 +404,29 @@ test('receipt validation rejects stale, mismatched and denied receipts',()=>{
 test('OMNI read requires service authentication',async()=>{const {r}=await post('/v1/omni/work/read',{access_receipt_id:receiptId});assert.equal(r.status,401);});
 test('OMNI Work read remains compatible',async()=>{const {r,b}=await post('/v1/omni/work/read',{access_receipt_id:receiptId},{'x-platform-service-key':omniKey});assert.equal(r.status,200);assert.equal(b.resource,'work');assert.equal(b.data.metrics.upcoming_events,1);});
 test('OMNI Calendar read remains compatible',async()=>{const calendarReceipt=receipt({resource:'calendar'});const localFetch=async(url,options={})=>{if(String(url).startsWith('https://access.test/v1/audit/receipts/'))return new Response(JSON.stringify({status:'ok',receipt:calendarReceipt}),{status:200,headers:{'content-type':'application/json'}});return fetchImpl(url,options);};const s=createServer(config,{fetchImpl:localFetch});s.listen(0,'127.0.0.1');await once(s,'listening');const r=await fetch(`http://127.0.0.1:${s.address().port}/v1/omni/calendar/read`,{method:'POST',headers:{'content-type':'application/json','x-platform-service-key':omniKey},body:JSON.stringify({access_receipt_id:receiptId})});const b=await r.json();s.close();assert.equal(r.status,200);assert.equal(b.resource,'calendar');assert.deepEqual(b.data.entries,[]);});
+
+
+test('shared web destinations redirect to configured Roll Call app origin',async()=>{
+  const previous=process.env.RC_ROLL_CALL_WEB_ORIGIN;
+  process.env.RC_ROLL_CALL_WEB_ORIGIN='https://preview.example.test';
+  try{
+    const configForRedirect=loadConfig(process.env);
+    const local=createServer(configForRedirect);
+    await new Promise(resolve=>local.listen(0,'127.0.0.1',resolve));
+    const address=local.address();
+    const origin='http://127.0.0.1:'+address.port;
+    for(const [path,expected] of [
+      ['/app','https://preview.example.test/app'],
+      ['/app/events','https://preview.example.test/app'],
+      ['/app/marketplace','https://preview.example.test/app/marketplace']
+    ]){
+      const response=await fetch(origin+path,{redirect:'manual'});
+      assert.equal(response.status,302);
+      assert.equal(response.headers.get('location'),expected);
+    }
+    await new Promise(resolve=>local.close(resolve));
+  }finally{
+    if(previous===undefined)delete process.env.RC_ROLL_CALL_WEB_ORIGIN;
+    else process.env.RC_ROLL_CALL_WEB_ORIGIN=previous;
+  }
+});
