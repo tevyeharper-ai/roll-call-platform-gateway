@@ -1,12 +1,14 @@
 {
   "name": "@roll-call/platform-gateway",
-  "version": "3.4.0",
+  "version": "3.7.2",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
     "test": "node --test test.mjs",
-    "check": "node --check server.mjs && node --check test.mjs"
+    "check": "node --check server.mjs && node --check browser-session.mjs && node --check test.mjs"
   },
-  "engines": {"node": ">=20"}
+  "engines": {
+    "node": ">=20"
+  }
 }
