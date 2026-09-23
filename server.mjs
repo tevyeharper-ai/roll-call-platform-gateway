@@ -77,6 +77,7 @@ export function loadConfig(env = process.env) {
     consumers,
     browserAuth:loadBrowserAuthConfig(env),
     browserPublicOrigins:parseBrowserPublicOrigins(env.RC_PUBLIC_URL,env.RC_BROWSER_PUBLIC_ORIGINS),
+    webAppOrigin:cleanUrl(env.RC_ROLL_CALL_WEB_ORIGIN||env.RC_ROLL_CALL_EVENTS_APP_URL),
     wordpressOrigin: env.RC_WORDPRESS_ORIGIN || null,
     platformAccess: {
       url: cleanUrl(env.RC_PLATFORM_ACCESS_URL),
@@ -176,10 +177,11 @@ function toolkitId(value=''){
   const map={events:'roll-call.events',broadcast:'roll-call.broadcast',field:'roll-call.field',experiential:'roll-call.experiential'};
   return map[raw]||(['roll-call.events','roll-call.broadcast','roll-call.field','roll-call.experiential'].includes(raw)?raw:null);
 }
-function shellToolkits(entitlements=[]){
+function shellToolkits(entitlements=[],webAppOrigin=''){
   const active=new Map(entitlements.map(item=>[item.toolkit_id,item]));
+  const eventsHref=webAppOrigin?webAppOrigin+'/app':'/app/events';
   return [
-    ['roll-call.events','Events','/app/events'],
+    ['roll-call.events','Events',eventsHref],
     ['roll-call.broadcast','Broadcast','/app/broadcast'],
     ['roll-call.field','Field','/app/field'],
     ['roll-call.experiential','Experiential','/app/experiential']
@@ -535,7 +537,7 @@ async function resolveShellSession({config,fetchImpl,correlation,cookieHeader,qu
   if(!context.ok)return {status:context.status,body:{authenticated:true,error:'core_context_failed',detail:context.body}};
 
   const entitlements=Array.isArray(context.body?.entitlements)?context.body.entitlements:[];
-  const toolkits=shellToolkits(entitlements);
+  const toolkits=shellToolkits(entitlements,config.webAppOrigin);
   const requestedToolkit=toolkitId(query.get('toolkit')||'');
   const firstEntitled=toolkits.find(item=>item.entitled)?.toolkit_id||null;
   const activeToolkit=requestedToolkit||firstEntitled;
@@ -896,6 +898,18 @@ export function createServer(config = loadConfig(), deps={}) {
 
       if((req.method==='POST'||req.method==='GET')&&url.pathname==='/api/auth/logout'){
         return redirect(res,config.browserAuth.publicUrl||'/',{cookies:logoutCookies()});
+      }
+
+      if(req.method==='GET'&&(
+        url.pathname==='/app'
+        || url.pathname==='/app/events'
+        || url.pathname==='/app/marketplace'
+        || url.pathname==='/app/settings'
+        || url.pathname==='/app/account'
+      )){
+        if(!config.webAppOrigin.startsWith('https://'))return send(res,503,{error:'roll_call_web_app_origin_not_ready'},correlation);
+        const mapped=url.pathname==='/app/events'?'/app':url.pathname;
+        return redirect(res,config.webAppOrigin+mapped+url.search);
       }
 
       if(req.method==='GET'&&url.pathname==='/v1/shell/session'){
